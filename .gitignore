@@ -12,3 +12,4 @@ intelligence_v3.json
 learning_v3.sqlite*
 status.json
 tradingbot.env
+trade_plans_v4.json

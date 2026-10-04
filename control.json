@@ -131,7 +131,19 @@
   "activity_profile": "active",
   "intelligence_entry_score": 60,
   "intelligence_exit_score": 38,
-  "config_version": 3,
+  "config_version": 4,
   "max_positions_per_group": 2,
-  "version": "3.0-intelligence"
+  "version": "3.0-intelligence",
+  "profit_engine_enabled": true,
+  "broker_bracket_enabled": true,
+  "stock_slippage_bps": 2.5,
+  "crypto_slippage_bps": 4.0,
+  "max_stock_notional_usd": 5000.0,
+  "max_crypto_notional_usd": 750.0,
+  "stock_max_position_pct_equity": 0.02,
+  "crypto_max_position_pct_equity": 0.0075,
+  "stock_risk_pct_equity": 0.0005,
+  "crypto_risk_pct_equity": 0.00035,
+  "min_live_calibration_samples": 50.0,
+  "allow_unvalidated_live": false
 }

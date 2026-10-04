@@ -1,28 +1,29 @@
-# TradingBot Intelligence V3
+# TradingBot Research Edge V4
 
-Remote 24/7 Alpaca paper-trading bot with a deliberately simple PC/mobile dashboard.
+Remote Alpaca paper-trading bot with a deliberately simple PC/mobile dashboard and a research-backed intelligence + expected-value layer.
 
-V3 adds an intelligence/veto layer on top of the existing deterministic execution engine:
+V4 keeps the same controls, while the engine adds:
 
-- Alpaca real-time news WebSocket + REST fallback
-- Alpaca stock/crypto live data streams where the account feed allows them
-- GDELT global geopolitical/event radar
-- Federal Reserve, BLS and EIA official feeds
-- BLS scheduled macro-event blackout around high-impact releases
-- SEC 8-K / 10-Q / 10-K radar for watched stocks
-- Cross-market regime using SPY, QQQ, IWM, XLE, GLD, TLT, HYG, USO, UUP and VIXY
-- Multi-timeframe trend/momentum, relative strength and live microstructure confirmation
-- Cost/spread/liquidity and portfolio concentration vetoes
-- Per-symbol Intelligence Score 0-100
-- SQLite learning journal with 5/15/60-minute outcomes for later walk-forward validation
+- Alpaca real-time news and live market streams with REST fallbacks
+- GDELT + Fed + BLS + EIA + SEC event intelligence
+- market regime, multi-timeframe trend and relative strength
+- medium-horizon industry/residual momentum and momentum-crash guard
+- live bid/ask microstructure / order-flow confirmation
+- volatility-adaptive take-profit / stop-loss
+- estimated probability + expected value after spread, slippage and fees
+- volatility/risk-based position sizing and portfolio group limits
+- broker-side bracket TP/SL for regular-hours stock entries
+- persistent SQLite learning journal with 5/15/60-minute outcomes
+- conservative live-validation gate to reduce the risk of backtest/selection overfitting
 
-The intelligence layer **does not place orders directly**. It scores and can veto candidates; the risk/execution engine remains the final gate.
+The intelligence/profit layers never bypass the deterministic risk gates. A BUY signal can still become WAIT_INTEL, WAIT_EDGE, WAIT_VALIDATION, SPREAD_TOO_WIDE, RISK_BLOCKED, etc.
 
-## Deploy
+## Deploy/update
 
-This repository is linked to Render. By default, Render auto-deploys when `main` changes.
-Existing Alpaca keys and dashboard password stay in Render Environment and must never be committed to GitHub.
+The repository is linked to Render. `START_TRADINGBOT.bat` in the downloadable package copies this folder into the existing GitHub repo, pushes `main`, waits for Render to serve the matching VERSION, then opens the dashboard.
+
+Alpaca keys and dashboard password remain in Render Environment and are not committed to GitHub.
 
 ## Important
 
-No trading system can predict markets with certainty or guarantee profit. Keep PAPER enabled until the strategy has enough out-of-sample data to demonstrate positive expectancy after spread, slippage and fees.
+No trading system predicts markets with certainty or guarantees profit. PAPER mode should remain enabled until enough out-of-sample observations demonstrate positive expectancy after spread, slippage and fees.

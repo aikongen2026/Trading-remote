@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""TradingBot Intelligence V3.
+"""TradingBot Intelligence V4.
 
 Purpose:
 - Combine technical context with real-time Alpaca news, world-event monitoring (GDELT),
@@ -232,6 +232,11 @@ class SignalJournal:
                     signal INTEGER,
                     action TEXT,
                     reason TEXT,
+                    probability_up REAL,
+                    expected_value_bps REAL,
+                    take_profit_pct REAL,
+                    stop_loss_pct REAL,
+                    estimated_cost_bps REAL,
                     outcome_5m REAL,
                     outcome_15m REAL,
                     outcome_60m REAL
@@ -239,7 +244,10 @@ class SignalJournal:
                 )
                 db.execute("CREATE INDEX IF NOT EXISTS idx_decisions_sym_ts ON decisions(symbol, ts)")
                 cols = {r[1] for r in db.execute("PRAGMA table_info(decisions)")}
-                for col in ("outcome_5m", "outcome_15m", "outcome_60m"):
+                for col in (
+                    "probability_up", "expected_value_bps", "take_profit_pct", "stop_loss_pct",
+                    "estimated_cost_bps", "outcome_5m", "outcome_15m", "outcome_60m"
+                ):
                     if col not in cols:
                         db.execute(f"ALTER TABLE decisions ADD COLUMN {col} REAL")
                 db.commit()
@@ -252,13 +260,17 @@ class SignalJournal:
         try:
             with self._lock, sqlite3.connect(self.path, timeout=3) as db:
                 db.execute(
-                    """INSERT INTO decisions(ts,symbol,market,price,technical,mtf,relative,news,regime,global_risk,composite,signal,action,reason)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    """INSERT INTO decisions(
+                    ts,symbol,market,price,technical,mtf,relative,news,regime,global_risk,composite,signal,action,reason,
+                    probability_up,expected_value_bps,take_profit_pct,stop_loss_pct,estimated_cost_bps)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         row.get("ts") or utc_now().isoformat(), row.get("symbol"), row.get("market"),
                         row.get("price"), row.get("technical"), row.get("mtf"), row.get("relative"),
                         row.get("news"), row.get("regime"), row.get("global_risk"), row.get("composite"),
                         row.get("signal"), row.get("action"), row.get("reason"),
+                        row.get("probability_up"), row.get("expected_value_bps"), row.get("take_profit_pct"),
+                        row.get("stop_loss_pct"), row.get("estimated_cost_bps"),
                     ),
                 )
                 db.commit()
@@ -306,7 +318,7 @@ class IntelligenceEngine:
         self.crypto_symbols = [str(s).upper() for s in crypto_symbols]
         self.lock = threading.RLock()
         self.session = requests.Session()
-        self.session.headers.update({"User-Agent": "TradingBot-Intelligence-V3/1.0"})
+        self.session.headers.update({"User-Agent": "TradingBot-Intelligence-V4/1.0"})
 
         self.items: Deque[NewsItem] = deque(maxlen=600)
         self.seen: Dict[str, float] = {}
@@ -317,6 +329,11 @@ class IntelligenceEngine:
         self.regime_score = 50.0
         self.regime_label = "NEUTRAL"
         self.regime_returns: Dict[str, float] = {}
+        self.daily_factor_score: Dict[str, float] = defaultdict(float)
+        self.daily_factor_debug: Dict[str, Dict[str, Any]] = {}
+        self.group_momentum: Dict[str, float] = {}
+        self.momentum_crash_risk = False
+        self.momentum_crash_debug: Dict[str, Any] = {}
         self.last_headline = ""
         self.last_source = ""
         self.last_update = ""
@@ -330,6 +347,7 @@ class IntelligenceEngine:
             "eia": "STARTING",
             "sec": "STARTING",
             "market_regime": "STARTING",
+            "daily_factors": "STARTING",
             "bls_calendar": "STARTING",
         }
         self.last_run = defaultdict(float)
@@ -338,6 +356,7 @@ class IntelligenceEngine:
         self.gdelt_interval = 15.0 * 60.0  # GDELT 2.0 core data updates every 15 minutes.
         self.official_interval = 4.0 * 60.0
         self.regime_interval = 60.0
+        self.factor_interval = 30.0 * 60.0
         self.sec_interval = 180.0
         self.persist_interval = 30.0
         self.calendar_interval = 6.0 * 3600.0
@@ -358,6 +377,7 @@ class IntelligenceEngine:
         self.stock_stream_symbols = [x for x in preferred if x in stock_set][:30]
         self.live_quotes: Dict[str, Dict[str, Any]] = {}
         self.live_bars: Dict[str, Dict[str, Any]] = {}
+        self.quote_history: Dict[str, Deque[Dict[str, Any]]] = defaultdict(lambda: deque(maxlen=30))
         self.journal = SignalJournal(os.path.join(state_dir, "learning_v3.sqlite"))
         self.sec_company_names: Dict[str, str] = {}
         self.sec_map_loaded_ts = 0.0
@@ -546,7 +566,21 @@ class IntelligenceEngine:
         for item in items:
             ts = parse_ts(item.ts) or now
             age_min = max(0.0, (now - ts).total_seconds() / 60.0)
-            decay = math.exp(-math.log(2) * age_min / max(5.0, self.decay_half_life_min))
+            half_life = self.decay_half_life_min
+            cat = str(item.category or "general").lower()
+            # Empirical event effects have very different horizons. Earnings/filings
+            # persist much longer than a generic headline; macro/geopolitical shocks
+            # sit between those extremes. This avoids treating every article as a
+            # 45-minute signal.
+            if "earnings" in cat:
+                half_life = 6.0 * 60.0
+            elif "filing" in cat:
+                half_life = 8.0 * 60.0
+            elif "macro" in cat:
+                half_life = 2.0 * 60.0
+            elif "geopolitics" in cat or "energy" in cat:
+                half_life = 3.0 * 60.0
+            decay = math.exp(-math.log(2) * age_min / max(5.0, half_life))
             w = decay * item.importance
             if w < 0.03:
                 continue
@@ -681,12 +715,14 @@ class IntelligenceEngine:
             return
         key = normalize_symbol(sym)
         if typ == "q":
+            snap = {
+                "bid": safe_float(m.get("bp")), "ask": safe_float(m.get("ap")),
+                "bid_size": safe_float(m.get("bs")), "ask_size": safe_float(m.get("as")),
+                "ts": str(m.get("t") or utc_now().isoformat()), "market": market,
+            }
             with self.lock:
-                self.live_quotes[key] = {
-                    "bid": safe_float(m.get("bp")), "ask": safe_float(m.get("ap")),
-                    "bid_size": safe_float(m.get("bs")), "ask_size": safe_float(m.get("as")),
-                    "ts": str(m.get("t") or utc_now().isoformat()), "market": market,
-                }
+                self.live_quotes[key] = snap
+                self.quote_history[key].append(dict(snap))
         elif typ in {"b", "u"}:  # minute bar / updated bar
             with self.lock:
                 self.live_bars[key] = {
@@ -777,15 +813,17 @@ class IntelligenceEngine:
             self._stop.wait(10)
 
     def microstructure_score(self, symbol: str, market: str) -> Tuple[float, Dict[str, Any]]:
-        """Small confirmation score from live bid/ask imbalance + current bar.
+        """Bounded order-flow / quote-pressure confirmation.
 
-        Bounded intentionally: market microstructure may confirm a trade but can
-        never override risk controls or a strongly negative macro/news picture.
+        Research on order-flow imbalance shows that short-horizon price changes
+        are related to imbalances at the best bid/ask. We use only top-of-book
+        information available from the subscribed feed and keep the score small.
         """
         key = normalize_symbol(symbol)
         with self.lock:
             q = dict(self.live_quotes.get(key) or {})
             b = dict(self.live_bars.get(key) or {})
+            hist = list(self.quote_history.get(key) or [])
         if not q:
             return 0.0, {"live": False}
         ts = parse_ts(q.get("ts"))
@@ -799,18 +837,32 @@ class IntelligenceEngine:
         spread_bps = (ask - bid) / max(mid, 1e-12) * 10000.0
         bs, ass = safe_float(q.get("bid_size")), safe_float(q.get("ask_size"))
         imbalance = (bs - ass) / max(bs + ass, 1e-12) if (bs + ass) > 0 else 0.0
-        score = clamp(imbalance * 5.0, -5.0, 5.0)
+
+        recent_imbalances: List[float] = []
+        mids: List[float] = []
+        for h in hist[-20:]:
+            hb, ha = safe_float(h.get("bid")), safe_float(h.get("ask"))
+            hbs, has = safe_float(h.get("bid_size")), safe_float(h.get("ask_size"))
+            if hb > 0 and ha >= hb:
+                mids.append((hb + ha) / 2.0)
+            if hbs + has > 0:
+                recent_imbalances.append((hbs - has) / max(hbs + has, 1e-12))
+        avg_imb = sum(recent_imbalances) / len(recent_imbalances) if recent_imbalances else imbalance
+        quote_mom = pct(mids[0], mids[-1]) if len(mids) >= 4 else 0.0
+
+        score = clamp(imbalance * 3.0 + avg_imb * 3.0, -5.0, 5.0)
+        score += clamp(quote_mom * 1600.0, -2.5, 2.5)
         close = safe_float(b.get("close"))
         opn = safe_float(b.get("open"))
         if close > 0 and opn > 0:
-            score += clamp(pct(opn, close) * 800.0, -3.0, 3.0)
-        # Penalize bad execution conditions instead of interpreting them as alpha.
+            score += clamp(pct(opn, close) * 650.0, -2.5, 2.5)
         max_spread = 12.0 if market.upper() == "STOCK" else 30.0
         if spread_bps > max_spread:
             score -= clamp((spread_bps - max_spread) / 8.0, 0.0, 5.0)
-        return clamp(score, -7.0, 7.0), {
+        return clamp(score, -8.0, 8.0), {
             "live": True, "age_sec": round(age, 2), "spread_bps": round(spread_bps, 2),
-            "imbalance": round(imbalance, 3),
+            "imbalance": round(imbalance, 3), "avg_imbalance": round(avg_imb, 3),
+            "quote_momentum": round(quote_mom, 6), "quote_samples": len(hist),
         }
 
     # -------------------- GDELT world radar --------------------
@@ -955,7 +1007,7 @@ class IntelligenceEngine:
     def _load_sec_company_map(self) -> None:
         if self.sec_company_names and (time.time() - self.sec_map_loaded_ts) < 12 * 3600:
             return
-        headers = {"User-Agent": os.getenv("SEC_USER_AGENT", "TradingBot-Intelligence-V3 github.com/aikongen2026/Trading-remote")}
+        headers = {"User-Agent": os.getenv("SEC_USER_AGENT", "TradingBot-Intelligence-V4 github.com/aikongen2026/Trading-remote")}
         r = self.session.get("https://www.sec.gov/files/company_tickers.json", headers=headers, timeout=(5, 20))
         r.raise_for_status()
         data = r.json()
@@ -973,7 +1025,7 @@ class IntelligenceEngine:
     def _poll_sec(self) -> None:
         try:
             self._load_sec_company_map()
-            headers = {"User-Agent": os.getenv("SEC_USER_AGENT", "TradingBot-Intelligence-V3 github.com/aikongen2026/Trading-remote")}
+            headers = {"User-Agent": os.getenv("SEC_USER_AGENT", "TradingBot-Intelligence-V4 github.com/aikongen2026/Trading-remote")}
             count = 0
             for form in ("8-k", "10-q", "10-k"):
                 url = "https://www.sec.gov/cgi-bin/browse-edgar"
@@ -1045,6 +1097,98 @@ class IntelligenceEngine:
         except Exception as exc:
             self.source_health["market_regime"] = f"ERR:{type(exc).__name__}"
 
+    # -------------------- research factors / momentum regime --------------------
+    @staticmethod
+    def _rank_percentiles(values: Dict[str, float]) -> Dict[str, float]:
+        if not values:
+            return {}
+        ordered = sorted(values.items(), key=lambda kv: kv[1])
+        n = max(1, len(ordered) - 1)
+        return {sym: i / n for i, (sym, _v) in enumerate(ordered)}
+
+    def _daily_factor_model(self) -> None:
+        """Slow-moving daily prior: residual/industry momentum + crash guard.
+
+        Intraday execution remains driven by live data. The daily factor is only a
+        directional prior so a one-minute signal does not fight a strong medium-
+        horizon trend without extra evidence.
+        """
+        universe = list(dict.fromkeys(self.stock_symbols + ["SPY", "QQQ", "XLE"]))
+        try:
+            end = utc_now()
+            start = end - timedelta(days=230)
+            bars = self.api.bars(universe, "1Day", 150, start.isoformat(), end.isoformat(), self.cfg.stock_feed)
+            raw: Dict[str, Dict[str, float]] = {}
+            for sym in universe:
+                arr = bars.get(sym) or []
+                vals = [safe_float(x.get("c")) for x in arr if safe_float(x.get("c")) > 0]
+                if len(vals) < 22:
+                    continue
+                r20 = pct(vals[-min(21, len(vals))], vals[-1])
+                r60 = pct(vals[-min(61, len(vals))], vals[-1]) if len(vals) >= 30 else r20
+                r120 = pct(vals[-min(121, len(vals))], vals[-1]) if len(vals) >= 70 else r60
+                # Medium-horizon realised daily volatility, annualised.
+                rets = [pct(a, b) for a, b in zip(vals[-21:-1], vals[-20:]) if a > 0]
+                vol20 = (sum(x*x for x in rets) / max(1, len(rets))) ** 0.5 * math.sqrt(252.0) if rets else 0.0
+                raw[sym] = {"r20": r20, "r60": r60, "r120": r120, "vol20": vol20}
+
+            group_vals: Dict[str, List[float]] = defaultdict(list)
+            for sym, d in raw.items():
+                if sym in {"SPY", "QQQ", "XLE"}:
+                    continue
+                group_vals[group_for_symbol(sym)].append(d.get("r60", 0.0))
+            group_avg = {g: sum(v)/len(v) for g, v in group_vals.items() if v}
+            residual = {sym: d.get("r60", 0.0) - group_avg.get(group_for_symbol(sym), 0.0)
+                        for sym, d in raw.items() if sym not in {"SPY", "QQQ", "XLE"}}
+            res_rank = self._rank_percentiles(residual)
+            r120_rank = self._rank_percentiles({s:d.get("r120",0.0) for s,d in raw.items() if s not in {"SPY","QQQ","XLE"}})
+            group_rank = self._rank_percentiles(group_avg)
+
+            scores: Dict[str, float] = {}
+            debug: Dict[str, Dict[str, Any]] = {}
+            for sym in self.stock_symbols:
+                d = raw.get(sym)
+                if not d:
+                    continue
+                g = group_for_symbol(sym)
+                rp = res_rank.get(sym, 0.5)
+                lp = r120_rank.get(sym, 0.5)
+                gp = group_rank.get(g, 0.5)
+                score = (rp - 0.5) * 14.0 + (lp - 0.5) * 8.0 + (gp - 0.5) * 8.0
+                if d.get("r20", 0.0) > 0 and d.get("r60", 0.0) > 0:
+                    score += 2.0
+                elif d.get("r20", 0.0) < 0 and d.get("r60", 0.0) < 0:
+                    score -= 2.0
+                scores[normalize_symbol(sym)] = clamp(score, -16.0, 16.0)
+                debug[normalize_symbol(sym)] = {
+                    "r20": round(d.get("r20",0.0), 5), "r60": round(d.get("r60",0.0),5),
+                    "r120": round(d.get("r120",0.0),5), "residual60": round(residual.get(sym,0.0),5),
+                    "residual_rank": round(rp,3), "long_rank": round(lp,3),
+                    "group": g, "group_momentum": round(group_avg.get(g,0.0),5),
+                    "group_rank": round(gp,3), "vol20_ann": round(d.get("vol20",0.0),4),
+                }
+
+            # Daniel & Moskowitz style crash guard proxy: a sharp prior market decline,
+            # high volatility, and a fast rebound are hazardous for static momentum.
+            spy = raw.get("SPY") or {}
+            spy_vals = [safe_float(x.get("c")) for x in (bars.get("SPY") or []) if safe_float(x.get("c")) > 0]
+            r5 = pct(spy_vals[-min(6,len(spy_vals))], spy_vals[-1]) if len(spy_vals) >= 6 else 0.0
+            r20 = safe_float(spy.get("r20"), 0.0)
+            vol20 = safe_float(spy.get("vol20"), 0.0)
+            crash = bool(r20 <= -0.05 and r5 >= 0.025 and vol20 >= 0.22)
+            with self.lock:
+                self.daily_factor_score = defaultdict(float, scores)
+                self.daily_factor_debug = debug
+                self.group_momentum = group_avg
+                self.momentum_crash_risk = crash
+                self.momentum_crash_debug = {
+                    "spy_r5": round(r5,5), "spy_r20": round(r20,5),
+                    "spy_vol20_ann": round(vol20,4), "active": crash,
+                }
+            self.source_health["daily_factors"] = f"OK:{len(scores)}"
+        except Exception as exc:
+            self.source_health["daily_factors"] = f"ERR:{type(exc).__name__}"
+
     # -------------------- scheduling / scoring --------------------
     def refresh_if_due(self) -> None:
         """Kick due network refreshes in a background worker; never block trading decisions."""
@@ -1056,6 +1200,7 @@ class IntelligenceEngine:
             or now - self.last_run["calendar"] >= self.calendar_interval
             or now - self.last_run["sec"] >= self.sec_interval
             or now - self.last_run["regime"] >= self.regime_interval
+            or now - self.last_run["factors"] >= self.factor_interval
             or now - self.last_run["persist"] >= self.persist_interval
         )
         if not due or not self._refresh_lock.acquire(blocking=False):
@@ -1065,7 +1210,7 @@ class IntelligenceEngine:
                 self._refresh_due_blocking()
             finally:
                 self._refresh_lock.release()
-        threading.Thread(target=worker, name="intel-refresh-v3", daemon=True).start()
+        threading.Thread(target=worker, name="intel-refresh-v4", daemon=True).start()
 
     def _refresh_due_blocking(self) -> None:
         now = time.time()
@@ -1088,6 +1233,9 @@ class IntelligenceEngine:
         if now - self.last_run["regime"] >= self.regime_interval:
             self.last_run["regime"] = now
             self._market_regime()
+        if now - self.last_run["factors"] >= self.factor_interval:
+            self.last_run["factors"] = now
+            self._daily_factor_model()
         self._recompute_news_scores()
         if now - self.last_run["persist"] >= self.persist_interval:
             self.last_run["persist"] = now
@@ -1149,6 +1297,7 @@ class IntelligenceEngine:
         rel = self.relative_strength(symbol, closes) if market.upper() == "STOCK" else 0.0
         micro, micro_debug = self.microstructure_score(symbol, market)
         news = self.news_score(symbol)
+        long_factor = self.daily_factor_score.get(normalize_symbol(symbol), 0.0) if market.upper() == "STOCK" else 0.0
         regime_component = (self.regime_score - 50.0) * 0.20 if market.upper() == "STOCK" else 0.0
         if market.upper() == "CRYPTO":
             # crypto is more sensitive to risk appetite, but cap the effect.
@@ -1157,7 +1306,10 @@ class IntelligenceEngine:
         g = group_for_symbol(symbol)
         if g in {"ENERGY", "DEFENSE"} and self.global_risk > 65:
             risk_penalty *= 0.35
-        composite = 50.0 + tech + mtf + rel + micro + news * 0.65 + regime_component - risk_penalty
+        crash_penalty = 0.0
+        if market.upper() == "STOCK" and self.momentum_crash_risk and g not in {"ENERGY", "DEFENSE"}:
+            crash_penalty = 5.0
+        composite = 50.0 + tech + mtf + rel + micro + news * 0.65 + long_factor * 0.70 + regime_component - risk_penalty - crash_penalty
         composite = clamp(composite, 0, 100)
         entry_threshold = 60.0 if profile == "active" else 67.0
         exit_threshold = 38.0 if profile == "active" else 42.0
@@ -1165,8 +1317,8 @@ class IntelligenceEngine:
         confidence = abs(composite - 50.0) * 2.0
         reason = (
             f"score={composite:.1f} tech={tech:+.1f} mtf={mtf:+.1f} rel={rel:+.1f} micro={micro:+.1f} "
-            f"news={news:+.1f} regime={self.regime_score:.1f} risk={self.global_risk:.1f} "
-            f"event_blackout={self.event_blackout} risk_veto={hard_risk_veto}"
+            f"news={news:+.1f} long={long_factor:+.1f} regime={self.regime_score:.1f} risk={self.global_risk:.1f} "
+            f"crash_guard={self.momentum_crash_risk} event_blackout={self.event_blackout} risk_veto={hard_risk_veto}"
         )
         return {
             "score": round(composite, 1),
@@ -1183,6 +1335,10 @@ class IntelligenceEngine:
             "micro": round(micro, 2),
             "micro_debug": micro_debug,
             "news": round(news, 2),
+            "long_factor": round(long_factor, 2),
+            "long_factor_debug": self.daily_factor_debug.get(normalize_symbol(symbol), {}),
+            "momentum_crash_risk": bool(self.momentum_crash_risk),
+            "momentum_crash_debug": dict(self.momentum_crash_debug),
             "regime": round(self.regime_score, 2),
             "global_risk": round(self.global_risk, 2),
             "reason": reason,
@@ -1202,6 +1358,11 @@ class IntelligenceEngine:
             "news": intelligence.get("news"), "regime": intelligence.get("regime"),
             "global_risk": intelligence.get("global_risk"), "composite": intelligence.get("score"),
             "signal": signal, "action": action, "reason": intelligence.get("reason"),
+            "probability_up": intelligence.get("probability_up"),
+            "expected_value_bps": intelligence.get("expected_value_bps"),
+            "take_profit_pct": intelligence.get("take_profit_pct"),
+            "stop_loss_pct": intelligence.get("stop_loss_pct"),
+            "estimated_cost_bps": intelligence.get("estimated_cost_bps"),
         })
 
     def summary(self) -> Dict[str, Any]:
@@ -1209,7 +1370,7 @@ class IntelligenceEngine:
             latest = [asdict(x) for x in list(self.items)[:8]]
             return {
                 "enabled": True,
-                "version": "3.0",
+                "version": "4.0",
                 "regime_score": round(self.regime_score, 1),
                 "regime_label": self.regime_label,
                 "global_risk": round(self.global_risk, 1),
@@ -1219,6 +1380,8 @@ class IntelligenceEngine:
                 "last_update": self.last_update,
                 "source_health": dict(self.source_health),
                 "event_blackout": bool(self.event_blackout),
+                "momentum_crash_risk": bool(self.momentum_crash_risk),
+                "momentum_crash_debug": dict(self.momentum_crash_debug),
                 "next_macro_event": self.next_macro_event,
                 "next_macro_event_ts": self.next_macro_event_ts,
                 "latest_news": latest,

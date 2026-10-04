@@ -33,6 +33,7 @@ from urllib.parse import quote as url_quote
 
 import requests
 from intelligence_engine import IntelligenceEngine, group_for_symbol
+from profit_engine import ProfitEngine
 
 try:
     import tkinter as tk
@@ -47,6 +48,7 @@ STATE_DIR = (os.getenv("TRADINGBOT_STATE_DIR") or HERE).strip() or HERE
 os.makedirs(STATE_DIR, exist_ok=True)
 CONTROL_PATH = os.path.join(STATE_DIR, "control.json")
 STATUS_PATH = os.path.join(STATE_DIR, "status.json")
+TRADE_PLANS_PATH = os.path.join(STATE_DIR, "trade_plans_v4.json")
 BOT_INSTANCE_PORT = int(os.getenv("TRADINGBOT_INSTANCE_PORT", "5051"))
 
 
@@ -64,7 +66,7 @@ def acquire_single_instance_socket() -> socket.socket:
 
 
 DEFAULT_CONTROL: Dict[str, Any] = {
-    "config_version": 3,
+    "config_version": 4,
     "paused": True,
     "kill": False,
     "armed": False,
@@ -128,6 +130,19 @@ DEFAULT_CONTROL: Dict[str, Any] = {
     "activity_profile": "active",
     "intelligence_entry_score": 60.0,
     "intelligence_exit_score": 38.0,
+    # V4 research-edge profit engine. Existing static TP/SL remain fallback only.
+    "profit_engine_enabled": True,
+    "broker_bracket_enabled": True,
+    "stock_slippage_bps": 2.5,
+    "crypto_slippage_bps": 4.0,
+    "max_stock_notional_usd": 5000.0,
+    "max_crypto_notional_usd": 750.0,
+    "stock_max_position_pct_equity": 0.02,
+    "crypto_max_position_pct_equity": 0.0075,
+    "stock_risk_pct_equity": 0.0005,
+    "crypto_risk_pct_equity": 0.00035,
+    "min_live_calibration_samples": 50.0,
+    "allow_unvalidated_live": False,
     "test_buy": {"symbol": "AAPL", "qty": 1, "go": False},
     "test_sell_all": {"symbol": "AAPL", "go": False},
 }
@@ -136,7 +151,7 @@ DEFAULT_CONTROL: Dict[str, Any] = {
 def ensure_control_file() -> Dict[str, Any]:
     """Load control.json and migrate older installs without losing user state.
 
-    V3 migration is deliberately additive: existing armed/paused/strategy values
+    V4 migration is deliberately additive: existing armed/paused/strategy values
     stay intact, while new intelligence defaults and recommended market symbols
     are merged automatically after a cloud code update.
     """
@@ -152,7 +167,7 @@ def ensure_control_file() -> Dict[str, Any]:
             control[key] = json.loads(json.dumps(value)) if isinstance(value, (dict, list)) else value
             changed = True
 
-    # V3 expands the research universe. Merge rather than replace so custom
+    # V3/V4 expand the research universe. Merge rather than replace so custom
     # user tickers survive upgrades and new recommended tickers appear.
     if old_version < 3:
         existing = [str(x).upper().strip() for x in (control.get("symbols") or []) if str(x).strip()]
@@ -485,11 +500,11 @@ class AlpacaRest:
     def positions(self) -> List[Dict[str, Any]]:
         return self._req("GET", f"{self.cfg.trading_base}/v2/positions")
 
-    def get_orders(self, limit: int = 30, status: str = "all") -> List[Dict[str, Any]]:
+    def get_orders(self, limit: int = 30, status: str = "all", nested: bool = True) -> List[Dict[str, Any]]:
         return self._req(
             "GET",
             f"{self.cfg.trading_base}/v2/orders",
-            params={"status": status, "limit": int(limit), "direction": "desc"},
+            params={"status": status, "limit": int(limit), "direction": "desc", "nested": str(bool(nested)).lower()},
         )
 
     def submit_order(
@@ -517,6 +532,26 @@ class AlpacaRest:
         if extended_hours:
             body["extended_hours"] = True
         return self._req("POST", f"{self.cfg.trading_base}/v2/orders", json_body=body)
+
+    @staticmethod
+    def _price_str(price: float) -> str:
+        p = max(0.0001, float(price))
+        return f"{p:.2f}" if p >= 1.0 else f"{p:.4f}"
+
+    def submit_bracket_order(
+        self, symbol: str, qty: float, take_profit_price: float, stop_price: float, tif: str = "day"
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {
+            "symbol": symbol, "side": "buy", "type": "market", "time_in_force": tif,
+            "qty": str(int(qty) if float(qty).is_integer() else qty),
+            "order_class": "bracket",
+            "take_profit": {"limit_price": self._price_str(take_profit_price)},
+            "stop_loss": {"stop_price": self._price_str(stop_price)},
+        }
+        return self._req("POST", f"{self.cfg.trading_base}/v2/orders", json_body=body)
+
+    def cancel_order(self, order_id: str) -> Any:
+        return self._req("DELETE", f"{self.cfg.trading_base}/v2/orders/{order_id}")
 
     def close_position(self, symbol: str) -> Any:
         encoded = url_quote(symbol, safe="")
@@ -910,6 +945,72 @@ def json_safe_order(o: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(o)
     if "id" in out:
         out["id"] = str(out["id"])
+    if isinstance(out.get("legs"), list):
+        out["legs"] = [json_safe_order(x) for x in out["legs"] if isinstance(x, dict)]
+    return out
+
+
+def flatten_orders(orders: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    def walk(o: Dict[str, Any]) -> None:
+        out.append(o)
+        for leg in o.get("legs") or []:
+            if isinstance(leg, dict):
+                walk(leg)
+    for order in orders or []:
+        if isinstance(order, dict):
+            walk(order)
+    return out
+
+
+def cancel_open_orders_for_symbol(api: "AlpacaRest", orders: List[Dict[str, Any]], sym: str) -> int:
+    open_statuses = {"new", "accepted", "pending_new", "partially_filled", "held", "replaced", "pending_replace"}
+    n = 0
+    for o in flatten_orders(orders):
+        if symbol_key(str(o.get("symbol", ""))) != symbol_key(sym):
+            continue
+        if str(o.get("status", "")).lower() not in open_statuses:
+            continue
+        oid = str(o.get("id") or "").strip()
+        if not oid:
+            continue
+        try:
+            api.cancel_order(oid)
+            n += 1
+        except Exception:
+            pass
+    if n:
+        time.sleep(0.12)
+    return n
+
+
+def load_trade_plans() -> Dict[str, Dict[str, Any]]:
+    raw = safe_read_json(TRADE_PLANS_PATH, {})
+    return raw if isinstance(raw, dict) else {}
+
+
+def save_trade_plans(plans: Dict[str, Dict[str, Any]]) -> None:
+    safe_write_json(TRADE_PLANS_PATH, plans)
+
+
+def trade_plan_key(market: str, symbol: str) -> str:
+    return f"{str(market).upper()}:{str(symbol).upper()}"
+
+
+def intelligence_with_plan(intel: Dict[str, Any], plan: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(intel or {})
+    if not isinstance(plan, dict):
+        return out
+    out.update({
+        "probability_up": plan.get("probability_up"),
+        "expected_value_bps": plan.get("expected_value_bps"),
+        "take_profit_pct": plan.get("take_profit_pct"),
+        "stop_loss_pct": plan.get("stop_loss_pct"),
+        "estimated_cost_bps": plan.get("estimated_cost_bps"),
+    })
+    out["reason"] = str(out.get("reason", "")) + (
+        f" plan_ev={plan.get('expected_value_bps')}bps p={plan.get('probability_up_pct')}%"
+    )
     return out
 
 
@@ -946,13 +1047,28 @@ def chunk(lst: List[str], n: int) -> List[List[str]]:
 
 def has_open_order_for_symbol(orders: List[Dict[str, Any]], sym: str) -> bool:
     sym = sym.upper()
-    open_statuses = {"new", "accepted", "pending_new", "partially_filled", "held", "replaced"}
-    for o in orders or []:
+    open_statuses = {"new", "accepted", "pending_new", "partially_filled", "held", "replaced", "pending_replace"}
+    for o in flatten_orders(orders or []):
         try:
             if symbol_key(str(o.get("symbol", ""))) != symbol_key(sym):
                 continue
             st = str(o.get("status", "")).lower()
             if st in open_statuses:
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def has_open_sell_order_for_symbol(orders: List[Dict[str, Any]], sym: str) -> bool:
+    open_statuses = {"new", "accepted", "pending_new", "partially_filled", "held", "replaced", "pending_replace"}
+    for o in flatten_orders(orders or []):
+        try:
+            if symbol_key(str(o.get("symbol", ""))) != symbol_key(sym):
+                continue
+            if str(o.get("side", "")).lower() != "sell":
+                continue
+            if str(o.get("status", "")).lower() in open_statuses:
                 return True
         except Exception:
             continue
@@ -1086,12 +1202,14 @@ def main() -> None:
     cached_positions: Dict[str, Any] = {"value": [], "ts": 0.0}
     cached_orders: Dict[str, Any] = {"value": [], "ts": 0.0}
 
-    # Intelligence V3 runs in the background of the existing simple dashboard.
-    # It never places orders directly; it only scores/vetoes candidates.
+    # Intelligence + research-edge profit engine run behind the existing simple dashboard.
+    # Intelligence scores context; ProfitEngine converts it into cost/volatility/EV-aware plans.
     initial_control = ensure_control_file()
     intelligence = IntelligenceEngine(
         api, cfg, STATE_DIR, symbol_universe(initial_control), crypto_universe(initial_control)
     )
+    profit_engine = ProfitEngine(STATE_DIR)
+    trade_plans = load_trade_plans()
 
     while True:
         loop_start = time.time()
@@ -1174,6 +1292,19 @@ def main() -> None:
             intelligence_entry_score = float(control.get("intelligence_entry_score", 60 if activity_profile == "active" else 67) or 60)
             intelligence_exit_score = float(control.get("intelligence_exit_score", 38 if activity_profile == "active" else 42) or 38)
 
+            profit_engine_enabled = bool(control.get("profit_engine_enabled", True))
+            broker_bracket_enabled = bool(control.get("broker_bracket_enabled", True))
+            stock_slippage_bps = max(0.0, float(control.get("stock_slippage_bps", 2.5) or 0.0))
+            crypto_slippage_bps = max(0.0, float(control.get("crypto_slippage_bps", 4.0) or 0.0))
+            max_stock_notional_usd = max(1.0, float(control.get("max_stock_notional_usd", 5000.0) or 5000.0))
+            max_crypto_notional_usd = max(1.0, float(control.get("max_crypto_notional_usd", 750.0) or 750.0))
+            stock_max_position_pct_equity = max(0.001, float(control.get("stock_max_position_pct_equity", 0.02) or 0.02))
+            crypto_max_position_pct_equity = max(0.001, float(control.get("crypto_max_position_pct_equity", 0.0075) or 0.0075))
+            stock_risk_pct_equity = max(0.00005, float(control.get("stock_risk_pct_equity", 0.0005) or 0.0005))
+            crypto_risk_pct_equity = max(0.00005, float(control.get("crypto_risk_pct_equity", 0.00035) or 0.00035))
+            min_live_calibration_samples = max(0.0, float(control.get("min_live_calibration_samples", 50.0) or 0.0))
+            allow_unvalidated_live = bool(control.get("allow_unvalidated_live", False))
+
             daily_loss_limit_usd = float(control.get("daily_loss_limit_usd", 0.0) or 0.0)
             daily_loss_limit_pct = max(0.0, float(control.get("daily_loss_limit_pct", 0.02) or 0.0))
 
@@ -1219,7 +1350,7 @@ def main() -> None:
                 if (now_api - cached_positions["ts"]) >= 2.0:
                     future_map[pool.submit(api.positions)] = "positions"
                 if (now_api - cached_orders["ts"]) >= 2.0:
-                    future_map[pool.submit(api.get_orders, 30, "all")] = "orders"
+                    future_map[pool.submit(api.get_orders, 100, "all", True)] = "orders"
                 if (now_api - cached_clock["ts"]) >= 10.0:
                     future_map[pool.submit(api.clock)] = "clock"
 
@@ -1245,8 +1376,13 @@ def main() -> None:
                 cached_clock["ts"] = time.time()
 
             acct = cached_account.get("value") or {}
+            account_equity = 0.0
             if acct:
                 day_pnl = calc_day_pnl_usd(acct)
+                try:
+                    account_equity = float(acct.get("equity", 0) or 0)
+                except Exception:
+                    account_equity = 0.0
 
             pos_raw = cached_positions.get("value") or []
             positions_map = positions_to_map(pos_raw if isinstance(pos_raw, list) else [])
@@ -1499,6 +1635,34 @@ def main() -> None:
                             except Exception as e:
                                 st["debug"]["intel_error"] = str(e)
 
+                        intel["entry_threshold"] = intelligence_entry_score
+                        profit_plan = None
+                        if profit_engine_enabled and st.get("price"):
+                            try:
+                                profit_plan = profit_engine.plan(
+                                    market="STOCK", symbol=sym, price=float(st["price"]), closes=closes,
+                                    spread_bps=float(st["debug"].get("spread_bps", 0.0) or 0.0),
+                                    intelligence=intel, strategy=strategy_mode, profile=activity_profile,
+                                    account_equity=account_equity, base_stock_qty=stock_qty,
+                                    stock_slippage_bps=stock_slippage_bps,
+                                    max_stock_notional_usd=max_stock_notional_usd,
+                                    stock_max_position_pct_equity=stock_max_position_pct_equity,
+                                    stock_risk_pct_equity=stock_risk_pct_equity,
+                                )
+                                pd = profit_plan.to_dict()
+                                st["debug"].update({
+                                    "prob_up_pct": pd.get("probability_up_pct"),
+                                    "ev_bps": pd.get("expected_value_bps"),
+                                    "dynamic_tp_pct": pd.get("take_profit_pct"),
+                                    "dynamic_sl_pct": pd.get("stop_loss_pct"),
+                                    "reward_risk": pd.get("reward_risk"),
+                                    "estimated_rt_cost_bps": pd.get("estimated_cost_bps"),
+                                    "planned_qty": pd.get("qty"),
+                                    "profit_plan_reason": pd.get("reason"),
+                                })
+                            except Exception as e:
+                                st["debug"]["profit_engine_error"] = str(e)
+
                         if not armed or paused or kill:
                             st["action"] = "HOLD"
                             symbols_state[sym] = st
@@ -1514,16 +1678,13 @@ def main() -> None:
                             symbols_state[sym] = st
                             continue
 
-                        if isinstance(q, dict) and not quote_age_ok:
-                            st["action"] = "QUOTE_STALE"
-                            symbols_state[sym] = st
-                            continue
+                        # Stale quotes block new entries, but existing positions must still
+                        # be able to execute protective exits.
+                        quote_is_stale = bool(isinstance(q, dict) and not quote_age_ok)
+                        pkey = trade_plan_key("STOCK", sym)
+                        saved_plan = trade_plans.get(pkey) if isinstance(trade_plans.get(pkey), dict) else {}
 
-                        qty = stock_qty
-
-                        # Position management gets priority over entry-only filters.
-                        # A pending order/cooldown/spread filter must never suppress a protective exit.
-                        # This makes the bot recycle capital more often while keeping a bounded loss.
+                        # Position management always has priority over entry-only filters.
                         if st["pos_qty"] > 0 and st.get("avg_entry") and st.get("price"):
                             avg_entry = float(st["avg_entry"])
                             live_price = float(st["price"])
@@ -1538,16 +1699,28 @@ def main() -> None:
                             st["debug"]["held_sec"] = int(held_sec)
                             st["debug"]["peak_price"] = round(peak, 4)
 
+                            # Freeze the plan created at entry so targets do not move every second.
+                            active_plan = saved_plan or (profit_plan.to_dict() if profit_plan is not None else {})
+                            tp_pct = max(0.0, float(active_plan.get("take_profit_pct", take_profit_pct) or take_profit_pct))
+                            sl_pct = max(0.0, float(active_plan.get("stop_loss_pct", stop_loss_pct) or stop_loss_pct))
+                            trail_activate = max(0.0, float(active_plan.get("trailing_activate_pct", trailing_activate_pct) or trailing_activate_pct))
+                            trail_stop = max(0.0, float(active_plan.get("trailing_stop_pct", trailing_stop_pct) or trailing_stop_pct))
+                            broker_bracket = bool(active_plan.get("broker_bracket", False) or has_open_sell_order_for_symbol(orders, sym))
+                            st["debug"]["active_tp_pct"] = round(tp_pct, 6)
+                            st["debug"]["active_sl_pct"] = round(sl_pct, 6)
+                            st["debug"]["broker_bracket"] = broker_bracket
+
                             exit_reason = ""
-                            if take_profit_pct > 0 and pnl_pct >= take_profit_pct:
+                            # Broker-side bracket owns hard TP/SL during regular hours. This keeps
+                            # protection alive even if the Render process restarts.
+                            if not broker_bracket and tp_pct > 0 and pnl_pct >= tp_pct:
                                 exit_reason = "TAKE_PROFIT"
-                            elif stop_loss_pct > 0 and pnl_pct <= -stop_loss_pct:
+                            elif not broker_bracket and sl_pct > 0 and pnl_pct <= -sl_pct:
                                 exit_reason = "STOP_LOSS"
                             elif (
-                                trailing_stop_pct > 0
-                                and trailing_activate_pct > 0
-                                and peak >= avg_entry * (1.0 + trailing_activate_pct)
-                                and live_price <= peak * (1.0 - trailing_stop_pct)
+                                trail_stop > 0 and trail_activate > 0
+                                and peak >= avg_entry * (1.0 + trail_activate)
+                                and live_price <= peak * (1.0 - trail_stop)
                             ):
                                 exit_reason = "TRAILING_STOP"
                             elif max_hold_sec > 0 and held_sec >= max_hold_sec:
@@ -1558,6 +1731,8 @@ def main() -> None:
                                 exit_reason = "SIGNAL_FLIP"
 
                             if exit_reason:
+                                # Cancel any bracket child exits before an intelligent/manual exit.
+                                cancel_open_orders_for_symbol(api, orders, sym)
                                 if regular_market_open:
                                     api.close_position(sym)
                                 else:
@@ -1567,27 +1742,36 @@ def main() -> None:
                                         continue
                                     sell_limit = max(0.01, float(st["bid"]) * (1.0 - extended_limit_buffer_bps / 10000.0))
                                     api.submit_order(
-                                        sym,
-                                        "sell",
-                                        float(st["pos_qty"]),
-                                        tif="day",
-                                        order_type="limit",
-                                        limit_price=sell_limit,
-                                        extended_hours=True,
+                                        sym, "sell", float(st["pos_qty"]), tif="day", order_type="limit",
+                                        limit_price=sell_limit, extended_hours=True,
                                     )
                                 popup_trade(f"SELL ALL {sym} ({exit_reason})")
                                 last_trade_ts[sym] = now_ts
                                 st["action"] = f"SELL_ALL:{exit_reason}"
                                 notes.append(f"AUTO SELL {sym} reason={exit_reason} pnl={pnl_pct:.4%}")
                                 if intelligence_enabled:
-                                    intelligence.record_decision(sym, "STOCK", st.get("price"), sig, st["action"], intel)
+                                    intel_log = intelligence_with_plan(intel, active_plan)
+                                    intelligence.record_decision(sym, "STOCK", st.get("price"), sig, st["action"], intel_log)
                                 position_peak_price.pop(sym, None)
                                 position_seen_ts.pop(sym, None)
+                                if pkey in trade_plans:
+                                    trade_plans.pop(pkey, None)
+                                    save_trade_plans(trade_plans)
+                                symbols_state[sym] = st
+                                continue
+
+                            if quote_is_stale:
+                                st["action"] = "QUOTE_STALE_HOLD"
                                 symbols_state[sym] = st
                                 continue
                         else:
                             position_peak_price.pop(sym, None)
                             position_seen_ts.pop(sym, None)
+                            # Clear an orphaned plan only after entry/bracket orders are gone.
+                            if pkey in trade_plans and not has_open_order_for_symbol(orders, sym):
+                                trade_plans.pop(pkey, None)
+                                save_trade_plans(trade_plans)
+                                saved_plan = {}
 
                         open_position_count = sum(
                             1 for p in (pos_raw if isinstance(pos_raw, list) else [])
@@ -1608,8 +1792,19 @@ def main() -> None:
                         st["debug"]["same_group_positions"] = same_group_count
 
                         if sig > 0 and st["pos_qty"] <= 0:
+                            qty = float(profit_plan.qty) if profit_engine_enabled and profit_plan is not None else stock_qty
                             if intelligence_enabled and not bool(intel.get("entry_allowed")):
                                 st["action"] = f"WAIT_INTEL:{float(intel.get('score', 0)):.0f}"
+                            elif profit_engine_enabled and (profit_plan is None or not bool(profit_plan.allowed)):
+                                if profit_plan is None:
+                                    st["action"] = "WAIT_EDGE"
+                                else:
+                                    st["action"] = f"WAIT_EDGE:{profit_plan.probability_up*100:.0f}%/{profit_plan.expected_value_bps:+.0f}bp"
+                            elif (not cfg.paper and profit_engine_enabled and profit_plan is not None
+                                  and not allow_unvalidated_live and profit_plan.calibration_samples < min_live_calibration_samples):
+                                st["action"] = f"WAIT_VALIDATION:{profit_plan.calibration_samples:.0f}/{min_live_calibration_samples:.0f}"
+                            elif quote_is_stale:
+                                st["action"] = "QUOTE_STALE"
                             elif risk_blocked:
                                 st["action"] = "RISK_BLOCKED"
                             elif skip_if_open_order and has_open_order_for_symbol(orders, sym):
@@ -1624,9 +1819,28 @@ def main() -> None:
                                 st["action"] = "MAX_POSITIONS"
                             elif max_positions_per_group > 0 and same_group_count >= max_positions_per_group:
                                 st["action"] = f"GROUP_LIMIT:{current_group}"
+                            elif qty < 1:
+                                st["action"] = "SIZE_TOO_SMALL"
                             else:
+                                plan_to_save = profit_plan.to_dict() if profit_plan is not None else {
+                                    "take_profit_pct": take_profit_pct, "stop_loss_pct": stop_loss_pct,
+                                    "trailing_activate_pct": trailing_activate_pct, "trailing_stop_pct": trailing_stop_pct,
+                                    "qty": qty, "expected_value_bps": None, "probability_up_pct": None,
+                                }
+                                broker_bracket = False
                                 if regular_market_open:
-                                    api.submit_order(sym, "buy", qty, tif="day")
+                                    if broker_bracket_enabled and profit_engine_enabled and profit_plan is not None:
+                                        ref_price = float(st.get("ask") or st.get("price") or 0)
+                                        if ref_price <= 0:
+                                            st["action"] = "WAIT_PRICE"
+                                            symbols_state[sym] = st
+                                            continue
+                                        tp_price = ref_price * (1.0 + float(profit_plan.take_profit_pct))
+                                        stop_price = ref_price * (1.0 - float(profit_plan.stop_loss_pct))
+                                        api.submit_bracket_order(sym, qty, tp_price, stop_price, tif="day")
+                                        broker_bracket = True
+                                    else:
+                                        api.submit_order(sym, "buy", qty, tif="day")
                                 else:
                                     if not extended_session_open or not st.get("ask"):
                                         st["action"] = "WAIT_EXTENDED_QUOTE"
@@ -1634,21 +1848,28 @@ def main() -> None:
                                         continue
                                     buy_limit = float(st["ask"]) * (1.0 + extended_limit_buffer_bps / 10000.0)
                                     api.submit_order(
-                                        sym,
-                                        "buy",
-                                        qty,
-                                        tif="day",
-                                        order_type="limit",
-                                        limit_price=buy_limit,
-                                        extended_hours=True,
+                                        sym, "buy", qty, tif="day", order_type="limit",
+                                        limit_price=buy_limit, extended_hours=True,
                                     )
-                                popup_trade(f"BUY {sym} x{qty}")
+                                plan_to_save.update({
+                                    "broker_bracket": broker_bracket,
+                                    "created_at": utc_now_iso(),
+                                    "entry_reference_price": float(st.get("ask") or st.get("price") or 0),
+                                    "strategy": strategy_mode,
+                                })
+                                trade_plans[pkey] = plan_to_save
+                                save_trade_plans(trade_plans)
+                                popup_trade(f"BUY {sym} x{qty:g}")
                                 last_trade_ts[sym] = now_ts
-                                st["action"] = f"BUY {qty}"
-                                notes.append(f"AUTO {strategy_mode.upper()} BUY {sym} x{qty} intel={float(intel.get('score', 0)):.1f}")
+                                st["action"] = f"BUY {qty:g}" + (" BRACKET" if broker_bracket else "")
+                                notes.append(
+                                    f"AUTO {strategy_mode.upper()} BUY {sym} x{qty:g} intel={float(intel.get('score', 0)):.1f} "
+                                    f"p={plan_to_save.get('probability_up_pct')} ev={plan_to_save.get('expected_value_bps')}bps "
+                                    f"tp={float(plan_to_save.get('take_profit_pct',0))*100:.2f}% sl={float(plan_to_save.get('stop_loss_pct',0))*100:.2f}%"
+                                )
                                 if intelligence_enabled:
-                                    intelligence.record_decision(sym, "STOCK", st.get("price"), sig, st["action"], intel)
-                                # Prevent multiple symbols in the same loop from ignoring the cap.
+                                    intel_log = intelligence_with_plan(intel, plan_to_save)
+                                    intelligence.record_decision(sym, "STOCK", st.get("price"), sig, st["action"], intel_log)
                                 positions_map[sym] = {"symbol": sym, "qty": str(qty), "avg_entry_price": str(st.get("price") or 0)}
                         else:
                             st["action"] = "HOLD"
@@ -1793,6 +2014,35 @@ def main() -> None:
                                 except Exception as e:
                                     st["debug"]["intel_error"] = str(e)
 
+                            intel["entry_threshold"] = intelligence_entry_score
+                            profit_plan = None
+                            if profit_engine_enabled and st.get("price"):
+                                try:
+                                    profit_plan = profit_engine.plan(
+                                        market="CRYPTO", symbol=sym, price=float(st["price"]), closes=closes,
+                                        spread_bps=float(st["debug"].get("spread_bps", 0.0) or 0.0),
+                                        intelligence=intel, strategy=crypto_strategy_mode, profile=activity_profile,
+                                        account_equity=account_equity, base_crypto_notional=crypto_notional_usd,
+                                        crypto_taker_fee_bps=crypto_taker_fee_bps,
+                                        crypto_slippage_bps=crypto_slippage_bps,
+                                        max_crypto_notional_usd=max_crypto_notional_usd,
+                                        crypto_max_position_pct_equity=crypto_max_position_pct_equity,
+                                        crypto_risk_pct_equity=crypto_risk_pct_equity,
+                                    )
+                                    pd = profit_plan.to_dict()
+                                    st["debug"].update({
+                                        "prob_up_pct": pd.get("probability_up_pct"),
+                                        "ev_bps": pd.get("expected_value_bps"),
+                                        "dynamic_tp_pct": pd.get("take_profit_pct"),
+                                        "dynamic_sl_pct": pd.get("stop_loss_pct"),
+                                        "reward_risk": pd.get("reward_risk"),
+                                        "estimated_rt_cost_bps": pd.get("estimated_cost_bps"),
+                                        "planned_notional_usd": pd.get("notional_usd"),
+                                        "profit_plan_reason": pd.get("reason"),
+                                    })
+                                except Exception as e:
+                                    st["debug"]["profit_engine_error"] = str(e)
+
                             if not armed or paused or kill:
                                 st["action"] = "HOLD"
                                 symbols_state[sym] = st
@@ -1802,30 +2052,38 @@ def main() -> None:
                                 symbols_state[sym] = st
                                 continue
 
-                            # IMPORTANT: stale quotes may block NEW entries, but must never suppress
-                            # protective exits for an existing crypto position.
                             quote_is_stale = bool(isinstance(q, dict) and not quote_age_ok)
+                            k = trade_plan_key("CRYPTO", sym)
+                            saved_plan = trade_plans.get(k) if isinstance(trade_plans.get(k), dict) else {}
 
                             if st["pos_qty"] > 0 and st.get("avg_entry") and st.get("price"):
                                 avg_entry = float(st["avg_entry"])
                                 live_price = float(st["price"])
                                 pnl_pct = pct_change(avg_entry, live_price)
                                 st["debug"]["position_pnl_pct"] = round(pnl_pct, 6)
-                                k = f"CRYPTO:{sym}"
                                 if k not in position_seen_ts:
                                     position_seen_ts[k] = now_crypto_ts
                                 peak = max(position_peak_price.get(k, live_price), live_price)
                                 position_peak_price[k] = peak
                                 held_sec = max(0.0, now_crypto_ts - position_seen_ts.get(k, now_crypto_ts))
                                 st["debug"]["held_sec"] = int(held_sec)
+
+                                active_plan = saved_plan or (profit_plan.to_dict() if profit_plan is not None else {})
+                                tp_pct = max(0.0, float(active_plan.get("take_profit_pct", crypto_take_profit_pct) or crypto_take_profit_pct))
+                                sl_pct = max(0.0, float(active_plan.get("stop_loss_pct", crypto_stop_loss_pct) or crypto_stop_loss_pct))
+                                trail_activate = max(0.0, float(active_plan.get("trailing_activate_pct", crypto_trailing_activate_pct) or crypto_trailing_activate_pct))
+                                trail_stop = max(0.0, float(active_plan.get("trailing_stop_pct", crypto_trailing_stop_pct) or crypto_trailing_stop_pct))
+                                st["debug"]["active_tp_pct"] = round(tp_pct, 6)
+                                st["debug"]["active_sl_pct"] = round(sl_pct, 6)
+
                                 exit_reason = ""
-                                if crypto_take_profit_pct > 0 and pnl_pct >= crypto_take_profit_pct:
+                                if tp_pct > 0 and pnl_pct >= tp_pct:
                                     exit_reason = "TAKE_PROFIT"
-                                elif crypto_stop_loss_pct > 0 and pnl_pct <= -crypto_stop_loss_pct:
+                                elif sl_pct > 0 and pnl_pct <= -sl_pct:
                                     exit_reason = "STOP_LOSS"
-                                elif (crypto_trailing_stop_pct > 0 and crypto_trailing_activate_pct > 0
-                                      and peak >= avg_entry * (1.0 + crypto_trailing_activate_pct)
-                                      and live_price <= peak * (1.0 - crypto_trailing_stop_pct)):
+                                elif (trail_stop > 0 and trail_activate > 0
+                                      and peak >= avg_entry * (1.0 + trail_activate)
+                                      and live_price <= peak * (1.0 - trail_stop)):
                                     exit_reason = "TRAILING_STOP"
                                 elif crypto_max_hold_sec > 0 and held_sec >= crypto_max_hold_sec:
                                     exit_reason = "MAX_HOLD"
@@ -1840,46 +2098,49 @@ def main() -> None:
                                     st["action"] = f"SELL_ALL:{exit_reason}"
                                     notes.append(f"CRYPTO SELL {sym} reason={exit_reason} pnl={pnl_pct:.4%}")
                                     if intelligence_enabled:
-                                        intelligence.record_decision(sym, "CRYPTO", st.get("price"), sig, st["action"], intel)
+                                        intel_log = intelligence_with_plan(intel, active_plan)
+                                        intelligence.record_decision(sym, "CRYPTO", st.get("price"), sig, st["action"], intel_log)
                                     position_peak_price.pop(k, None)
                                     position_seen_ts.pop(k, None)
+                                    if k in trade_plans:
+                                        trade_plans.pop(k, None)
+                                        save_trade_plans(trade_plans)
                                     symbols_state[sym] = st
                                     continue
 
-                                # Keep holding if no protective exit fired. A stale quote is shown
-                                # explicitly, but it no longer disables the stop logic above.
                                 if quote_is_stale:
                                     st["action"] = "QUOTE_STALE_HOLD"
                                     symbols_state[sym] = st
                                     continue
                             else:
-                                position_peak_price.pop(f"CRYPTO:{sym}", None)
-                                position_seen_ts.pop(f"CRYPTO:{sym}", None)
+                                position_peak_price.pop(k, None)
+                                position_seen_ts.pop(k, None)
+                                if k in trade_plans and not has_open_order_for_symbol(orders, sym):
+                                    trade_plans.pop(k, None)
+                                    save_trade_plans(trade_plans)
+                                    saved_plan = {}
 
-                            k = f"CRYPTO:{sym}"
                             if sig > 0 and st["pos_qty"] <= 0:
                                 spread_bps = float(st["debug"].get("spread_bps", 0.0) or 0.0)
-                                gross_target_bps = crypto_take_profit_pct * 10000.0
-                                estimated_rt_cost_bps = crypto_estimated_roundtrip_cost_bps(
-                                    spread_bps, crypto_taker_fee_bps
-                                )
-                                estimated_net_edge_bps = gross_target_bps - estimated_rt_cost_bps
-                                st["debug"]["gross_target_bps"] = round(gross_target_bps, 2)
-                                st["debug"]["estimated_rt_cost_bps"] = round(estimated_rt_cost_bps, 2)
-                                st["debug"]["estimated_net_edge_bps"] = round(estimated_net_edge_bps, 2)
-
                                 confirmations = 1
                                 if crypto_strategy_mode == "scalp":
                                     confirmations = crypto_long_confirmations(
                                         closes, st.get("price"), fast_sma, slow_sma, hype_mom_n,
-                                        min_mom_pct, min_move_pct, min_slope_pct,
-                                        crypto_entry_confirm_bars,
+                                        min_mom_pct, min_move_pct, min_slope_pct, crypto_entry_confirm_bars,
                                     )
                                 st["debug"]["entry_confirmations"] = confirmations
                                 st["debug"]["entry_confirmations_required"] = crypto_entry_confirm_bars
 
                                 if intelligence_enabled and not bool(intel.get("entry_allowed")):
                                     st["action"] = f"WAIT_INTEL:{float(intel.get('score', 0)):.0f}"
+                                elif profit_engine_enabled and (profit_plan is None or not bool(profit_plan.allowed)):
+                                    if profit_plan is None:
+                                        st["action"] = "WAIT_EDGE"
+                                    else:
+                                        st["action"] = f"WAIT_EDGE:{profit_plan.probability_up*100:.0f}%/{profit_plan.expected_value_bps:+.0f}bp"
+                                elif (not cfg.paper and profit_engine_enabled and profit_plan is not None
+                                      and not allow_unvalidated_live and profit_plan.calibration_samples < min_live_calibration_samples):
+                                    st["action"] = f"WAIT_VALIDATION:{profit_plan.calibration_samples:.0f}/{min_live_calibration_samples:.0f}"
                                 elif quote_is_stale:
                                     st["action"] = "QUOTE_STALE"
                                 elif risk_blocked:
@@ -1892,25 +2153,33 @@ def main() -> None:
                                     st["action"] = "WAIT_CONFIRM"
                                 elif crypto_max_spread_bps > 0 and spread_bps > crypto_max_spread_bps:
                                     st["action"] = "SPREAD_BPS_TOO_WIDE"
-                                elif estimated_net_edge_bps < crypto_min_net_edge_bps:
-                                    st["action"] = "COST_TOO_HIGH"
                                 elif crypto_position_count >= crypto_max_positions:
                                     st["action"] = "MAX_CRYPTO_POSITIONS"
                                 else:
-                                    api.submit_notional_order(sym, "buy", crypto_notional_usd, tif="gtc", order_type="market")
-                                    popup_trade(f"CRYPTO BUY {sym} ${crypto_notional_usd:.0f}")
+                                    notional = float(profit_plan.notional_usd) if profit_engine_enabled and profit_plan is not None else crypto_notional_usd
+                                    api.submit_notional_order(sym, "buy", notional, tif="gtc", order_type="market")
+                                    plan_to_save = profit_plan.to_dict() if profit_plan is not None else {
+                                        "take_profit_pct": crypto_take_profit_pct, "stop_loss_pct": crypto_stop_loss_pct,
+                                        "trailing_activate_pct": crypto_trailing_activate_pct, "trailing_stop_pct": crypto_trailing_stop_pct,
+                                        "notional_usd": notional, "expected_value_bps": None, "probability_up_pct": None,
+                                    }
+                                    plan_to_save.update({"broker_bracket": False, "created_at": utc_now_iso(), "strategy": crypto_strategy_mode})
+                                    trade_plans[k] = plan_to_save
+                                    save_trade_plans(trade_plans)
+                                    popup_trade(f"CRYPTO BUY {sym} ${notional:.0f}")
                                     last_trade_ts[k] = now_crypto_ts
-                                    st["action"] = f"BUY ${crypto_notional_usd:.0f}"
+                                    st["action"] = f"BUY ${notional:.0f}"
                                     notes.append(
-                                        f"CRYPTO {crypto_strategy_mode.upper()} BUY {sym} ${crypto_notional_usd:.2f} "
-                                        f"est_cost={estimated_rt_cost_bps:.1f}bps est_net={estimated_net_edge_bps:.1f}bps "
-                                        f"intel={float(intel.get('score', 0)):.1f}"
+                                        f"CRYPTO {crypto_strategy_mode.upper()} BUY {sym} ${notional:.2f} "
+                                        f"cost={plan_to_save.get('estimated_cost_bps')}bps ev={plan_to_save.get('expected_value_bps')}bps "
+                                        f"p={plan_to_save.get('probability_up_pct')}% intel={float(intel.get('score', 0)):.1f}"
                                     )
                                     if intelligence_enabled:
-                                        intelligence.record_decision(sym, "CRYPTO", st.get("price"), sig, st["action"], intel)
+                                        intel_log = intelligence_with_plan(intel, plan_to_save)
+                                        intelligence.record_decision(sym, "CRYPTO", st.get("price"), sig, st["action"], intel_log)
                                     crypto_position_count += 1
                             else:
-                                st["action"] = "QUOTE_STALE" if quote_is_stale else "HOLD"
+                                st["action"] = "QUOTE_STALE" if quote_is_stale and st["pos_qty"] <= 0 else "HOLD"
                         except Exception as e:
                             st["error"] = str(e)
                         if intelligence_enabled and st.get("price"):
@@ -1936,10 +2205,16 @@ def main() -> None:
                 "day_pnl_usd": round(day_pnl, 2),
                 "risk_blocked": risk_blocked,
                 "intelligence": intelligence.summary() if intelligence_enabled else {"enabled": False},
+                "profit_engine": {
+                    "enabled": bool(profit_engine_enabled),
+                    "version": "4.0-research-edge",
+                    "broker_brackets": bool(broker_bracket_enabled),
+                    "journal": "learning_v3.sqlite",
+                },
                 "daily_loss_limit_usd_effective": round(effective_daily_loss_limit, 2),
                 "notes": " | ".join([n for n in notes if n]).strip(),
                 "symbols": symbols_state,
-                "orders": orders,
+                "orders": orders[:30],
             }
             safe_write_json(STATUS_PATH, out)
 
