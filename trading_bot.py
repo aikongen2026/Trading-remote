@@ -32,6 +32,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import quote as url_quote
 
 import requests
+from intelligence_engine import IntelligenceEngine, group_for_symbol
 
 try:
     import tkinter as tk
@@ -63,6 +64,7 @@ def acquire_single_instance_socket() -> socket.socket:
 
 
 DEFAULT_CONTROL: Dict[str, Any] = {
+    "config_version": 3,
     "paused": True,
     "kill": False,
     "armed": False,
@@ -92,6 +94,7 @@ DEFAULT_CONTROL: Dict[str, Any] = {
     "trailing_stop_pct": 0.0025,
     "max_hold_sec": 1800,
     "max_positions": 5,
+    "max_positions_per_group": 2,
     "daily_loss_limit_pct": 0.02,
     "refresh_bars_every_sec": 10,
     "quotes_batch_size": 200,
@@ -118,29 +121,57 @@ DEFAULT_CONTROL: Dict[str, Any] = {
         "NFLX", "INTC", "QCOM", "TXN", "AMAT", "MU", "IBM", "ORCL", "ADBE", "CRM",
         "CSCO", "INTU", "PYPL", "NOW", "UBER", "ABNB", "BKNG", "SNOW", "PLTR", "CRWD",
         "PANW", "ZS", "SNPS", "CDNS", "JPM", "BAC", "WFC", "C", "GS", "MS",
-        "V", "MA", "AXP", "KO", "PEP", "COST", "WMT", "HD", "UNH", "LLY"
+        "V", "MA", "AXP", "KO", "PEP", "COST", "WMT", "HD", "UNH", "LLY",
+        "XOM", "CVX", "COP", "OXY", "XLE", "LMT", "NOC", "RTX", "GD", "SPY", "QQQ"
     ],
+    "intelligence_enabled": True,
+    "activity_profile": "active",
+    "intelligence_entry_score": 60.0,
+    "intelligence_exit_score": 38.0,
     "test_buy": {"symbol": "AAPL", "qty": 1, "go": False},
     "test_sell_all": {"symbol": "AAPL", "go": False},
 }
 
 
 def ensure_control_file() -> Dict[str, Any]:
+    """Load control.json and migrate older installs without losing user state.
+
+    V3 migration is deliberately additive: existing armed/paused/strategy values
+    stay intact, while new intelligence defaults and recommended market symbols
+    are merged automatically after a cloud code update.
+    """
     control = safe_read_json(CONTROL_PATH, {})
     if not isinstance(control, dict):
         control = {}
+    changed = not os.path.exists(CONTROL_PATH)
 
-    symbols = control.get("symbols")
-    symbols_ok = isinstance(symbols, list) and len([s for s in symbols if str(s).strip()]) > 0
+    old_version = int(control.get("config_version", 0) or 0)
+    # Add any newly introduced settings, never overwrite existing user settings.
+    for key, value in DEFAULT_CONTROL.items():
+        if key not in control:
+            control[key] = json.loads(json.dumps(value)) if isinstance(value, (dict, list)) else value
+            changed = True
 
-    if not os.path.exists(CONTROL_PATH) or not symbols_ok:
-        merged = dict(DEFAULT_CONTROL)
-        if isinstance(control, dict):
-            merged.update(control)
-        merged["symbols"] = list(DEFAULT_CONTROL["symbols"])
-        safe_write_json(CONTROL_PATH, merged)
-        return merged
+    # V3 expands the research universe. Merge rather than replace so custom
+    # user tickers survive upgrades and new recommended tickers appear.
+    if old_version < 3:
+        existing = [str(x).upper().strip() for x in (control.get("symbols") or []) if str(x).strip()]
+        merged = list(dict.fromkeys(existing + list(DEFAULT_CONTROL["symbols"])))
+        if merged != control.get("symbols"):
+            control["symbols"] = merged
+            changed = True
+        cexisting = [str(x).upper().strip() for x in (control.get("crypto_symbols") or []) if str(x).strip()]
+        cmerged = list(dict.fromkeys(cexisting + list(DEFAULT_CONTROL["crypto_symbols"])))
+        if cmerged != control.get("crypto_symbols"):
+            control["crypto_symbols"] = cmerged
+            changed = True
 
+    if control.get("config_version") != DEFAULT_CONTROL["config_version"]:
+        control["config_version"] = DEFAULT_CONTROL["config_version"]
+        changed = True
+
+    if changed:
+        safe_write_json(CONTROL_PATH, control)
     return control
 
 
@@ -316,7 +347,17 @@ def load_dotenv_local(dotenv_path: str) -> Dict[str, str]:
     return values
 
 
-LOCAL_ENV = load_dotenv_local(os.path.join(HERE, ".env"))
+LOCAL_ENV: Dict[str, str] = {}
+for _cfg_path in (
+    os.path.join(HERE, ".env"),
+    os.path.join(HERE, "tradingbot.env"),
+    os.path.join(HERE, "ALPACA_KEYS.env"),
+    "/etc/secrets/tradingbot.env",
+    "/etc/secrets/alpaca_keys.env",
+):
+    _loaded = load_dotenv_local(_cfg_path)
+    for _k, _v in _loaded.items():
+        LOCAL_ENV.setdefault(_k, _v)
 
 
 def _env_value(*names: str, default: str = "") -> str:
@@ -348,7 +389,10 @@ def load_cfg() -> BotCfg:
     key = (key or "").strip()
     secret = (secret or "").strip()
     if not key or not secret:
-        raise RuntimeError("Mangler Alpaca keys. Sett APCA_API_KEY_ID og APCA_API_SECRET_KEY i .env.")
+        raise RuntimeError(
+            "Mangler Alpaca keys. Bruk ALPACA_KEY + ALPACA_SECRET som Render Environment-variabler, "
+            "eller Render Secret File /etc/secrets/tradingbot.env, eller lokal tradingbot.env/.env."
+        )
 
     paper = to_bool_env(_env_value("ALPACA_PAPER", default="true"), True)
     trading_base = "https://paper-api.alpaca.markets" if paper else "https://api.alpaca.markets"
@@ -1042,6 +1086,13 @@ def main() -> None:
     cached_positions: Dict[str, Any] = {"value": [], "ts": 0.0}
     cached_orders: Dict[str, Any] = {"value": [], "ts": 0.0}
 
+    # Intelligence V3 runs in the background of the existing simple dashboard.
+    # It never places orders directly; it only scores/vetoes candidates.
+    initial_control = ensure_control_file()
+    intelligence = IntelligenceEngine(
+        api, cfg, STATE_DIR, symbol_universe(initial_control), crypto_universe(initial_control)
+    )
+
     while True:
         loop_start = time.time()
         notes: List[str] = []
@@ -1099,6 +1150,7 @@ def main() -> None:
             trailing_stop_pct = max(0.0, float(control.get("trailing_stop_pct", 0.0025) or 0.0))
             max_hold_sec = max(0, int(control.get("max_hold_sec", 1800) or 0))
             max_positions = max(1, int(control.get("max_positions", 5) or 5))
+            max_positions_per_group = max(1, int(control.get("max_positions_per_group", 2) or 2))
             max_spread_bps = max(0.0, float(control.get("max_spread_bps", 8.0) or 0.0))
             extended_limit_buffer_bps = max(0.0, float(control.get("extended_limit_buffer_bps", 5.0) or 0.0))
 
@@ -1114,6 +1166,13 @@ def main() -> None:
             crypto_taker_fee_bps = max(0.0, float(control.get("crypto_taker_fee_bps", 25.0) or 0.0))
             crypto_min_net_edge_bps = max(0.0, float(control.get("crypto_min_net_edge_bps", 20.0) or 0.0))
             crypto_entry_confirm_bars = max(1, int(control.get("crypto_entry_confirm_bars", 2) or 1))
+
+            intelligence_enabled = bool(control.get("intelligence_enabled", True))
+            activity_profile = str(control.get("activity_profile", "active")).strip().lower()
+            if activity_profile not in ("active", "balanced"):
+                activity_profile = "active"
+            intelligence_entry_score = float(control.get("intelligence_entry_score", 60 if activity_profile == "active" else 67) or 60)
+            intelligence_exit_score = float(control.get("intelligence_exit_score", 38 if activity_profile == "active" else 42) or 38)
 
             daily_loss_limit_usd = float(control.get("daily_loss_limit_usd", 0.0) or 0.0)
             daily_loss_limit_pct = max(0.0, float(control.get("daily_loss_limit_pct", 0.02) or 0.0))
@@ -1203,6 +1262,14 @@ def main() -> None:
             extended_session_open = stock_session in {"PREMARKET", "AFTERHOURS", "OVERNIGHT"}
             stock_ok = trade_stocks and stock_session != "CLOSED"
             stock_live_feed = "overnight" if stock_session == "OVERNIGHT" else cfg.stock_feed
+
+            if intelligence_enabled:
+                try:
+                    intelligence.stock_symbols = list(stocks)
+                    intelligence.crypto_symbols = list(crypto_symbols)
+                    intelligence.refresh_if_due()
+                except Exception as e:
+                    notes.append(f"Intelligence refresh feilet: {e}")
 
             risk_blocked = False
             effective_daily_loss_limit = abs(daily_loss_limit_usd) if daily_loss_limit_usd > 0 else 0.0
@@ -1409,6 +1476,29 @@ def main() -> None:
 
                         st["signal"] = sig
 
+                        intel = {"score": 50.0, "entry_allowed": bool(sig > 0), "exit_bias": False, "reason": "intelligence disabled"}
+                        if intelligence_enabled:
+                            try:
+                                intel = intelligence.score_symbol(sym, "STOCK", closes, sig, st["debug"], activity_profile)
+                                # Control.json can override thresholds without cluttering the UI.
+                                intel["entry_allowed"] = bool(
+                                    sig > 0
+                                    and float(intel.get("score", 0)) >= intelligence_entry_score
+                                    and not bool(intel.get("event_blackout"))
+                                    and not bool(intel.get("risk_veto"))
+                                )
+                                intel["exit_bias"] = bool(float(intel.get("score", 50)) <= intelligence_exit_score)
+                                st["debug"]["intel_score"] = intel.get("score")
+                                st["debug"]["news_score"] = intel.get("news")
+                                st["debug"]["regime_score"] = intel.get("regime")
+                                st["debug"]["global_risk"] = intel.get("global_risk")
+                                st["debug"]["relative_strength"] = intel.get("relative")
+                                st["debug"]["micro_score"] = intel.get("micro")
+                                st["debug"]["event_blackout"] = intel.get("event_blackout")
+                                st["debug"]["risk_veto"] = intel.get("risk_veto")
+                            except Exception as e:
+                                st["debug"]["intel_error"] = str(e)
+
                         if not armed or paused or kill:
                             st["action"] = "HOLD"
                             symbols_state[sym] = st
@@ -1462,6 +1552,8 @@ def main() -> None:
                                 exit_reason = "TRAILING_STOP"
                             elif max_hold_sec > 0 and held_sec >= max_hold_sec:
                                 exit_reason = "MAX_HOLD"
+                            elif intelligence_enabled and bool(intel.get("exit_bias")):
+                                exit_reason = "INTELLIGENCE_EXIT"
                             elif sig < 0:
                                 exit_reason = "SIGNAL_FLIP"
 
@@ -1487,6 +1579,8 @@ def main() -> None:
                                 last_trade_ts[sym] = now_ts
                                 st["action"] = f"SELL_ALL:{exit_reason}"
                                 notes.append(f"AUTO SELL {sym} reason={exit_reason} pnl={pnl_pct:.4%}")
+                                if intelligence_enabled:
+                                    intelligence.record_decision(sym, "STOCK", st.get("price"), sig, st["action"], intel)
                                 position_peak_price.pop(sym, None)
                                 position_seen_ts.pop(sym, None)
                                 symbols_state[sym] = st
@@ -1503,8 +1597,20 @@ def main() -> None:
                             and "/" not in str(p.get("symbol", ""))
                         )
 
+                        current_group = group_for_symbol(sym)
+                        same_group_count = sum(
+                            1 for p in (pos_raw if isinstance(pos_raw, list) else [])
+                            if float(p.get("qty", 0) or 0) > 0
+                            and "/" not in str(p.get("symbol", ""))
+                            and group_for_symbol(str(p.get("symbol", ""))) == current_group
+                        )
+                        st["debug"]["group"] = current_group
+                        st["debug"]["same_group_positions"] = same_group_count
+
                         if sig > 0 and st["pos_qty"] <= 0:
-                            if risk_blocked:
+                            if intelligence_enabled and not bool(intel.get("entry_allowed")):
+                                st["action"] = f"WAIT_INTEL:{float(intel.get('score', 0)):.0f}"
+                            elif risk_blocked:
                                 st["action"] = "RISK_BLOCKED"
                             elif skip_if_open_order and has_open_order_for_symbol(orders, sym):
                                 st["action"] = "OPEN_ORDER"
@@ -1516,6 +1622,8 @@ def main() -> None:
                                 st["action"] = "SPREAD_BPS_TOO_WIDE"
                             elif open_position_count >= max_positions:
                                 st["action"] = "MAX_POSITIONS"
+                            elif max_positions_per_group > 0 and same_group_count >= max_positions_per_group:
+                                st["action"] = f"GROUP_LIMIT:{current_group}"
                             else:
                                 if regular_market_open:
                                     api.submit_order(sym, "buy", qty, tif="day")
@@ -1537,7 +1645,9 @@ def main() -> None:
                                 popup_trade(f"BUY {sym} x{qty}")
                                 last_trade_ts[sym] = now_ts
                                 st["action"] = f"BUY {qty}"
-                                notes.append(f"AUTO {strategy_mode.upper()} BUY {sym} x{qty}")
+                                notes.append(f"AUTO {strategy_mode.upper()} BUY {sym} x{qty} intel={float(intel.get('score', 0)):.1f}")
+                                if intelligence_enabled:
+                                    intelligence.record_decision(sym, "STOCK", st.get("price"), sig, st["action"], intel)
                                 # Prevent multiple symbols in the same loop from ignoring the cap.
                                 positions_map[sym] = {"symbol": sym, "qty": str(qty), "avg_entry_price": str(st.get("price") or 0)}
                         else:
@@ -1546,6 +1656,8 @@ def main() -> None:
                     except Exception as e:
                         st["error"] = str(e)
 
+                    if intelligence_enabled and st.get("price"):
+                        intelligence.update_learning_outcomes(sym, st.get("price"))
                     symbols_state[sym] = st
 
             # CRYPTO 24/7 -----------------------------------------------------
@@ -1660,6 +1772,27 @@ def main() -> None:
                                 st["debug"].update(dbg)
                             st["signal"] = sig
 
+                            intel = {"score": 50.0, "entry_allowed": bool(sig > 0), "exit_bias": False, "reason": "intelligence disabled"}
+                            if intelligence_enabled:
+                                try:
+                                    intel = intelligence.score_symbol(sym, "CRYPTO", closes, sig, st["debug"], activity_profile)
+                                    intel["entry_allowed"] = bool(
+                                        sig > 0
+                                        and float(intel.get("score", 0)) >= intelligence_entry_score
+                                        and not bool(intel.get("event_blackout"))
+                                        and not bool(intel.get("risk_veto"))
+                                    )
+                                    intel["exit_bias"] = bool(float(intel.get("score", 50)) <= intelligence_exit_score)
+                                    st["debug"]["intel_score"] = intel.get("score")
+                                    st["debug"]["news_score"] = intel.get("news")
+                                    st["debug"]["regime_score"] = intel.get("regime")
+                                    st["debug"]["global_risk"] = intel.get("global_risk")
+                                    st["debug"]["micro_score"] = intel.get("micro")
+                                    st["debug"]["event_blackout"] = intel.get("event_blackout")
+                                    st["debug"]["risk_veto"] = intel.get("risk_veto")
+                                except Exception as e:
+                                    st["debug"]["intel_error"] = str(e)
+
                             if not armed or paused or kill:
                                 st["action"] = "HOLD"
                                 symbols_state[sym] = st
@@ -1696,6 +1829,8 @@ def main() -> None:
                                     exit_reason = "TRAILING_STOP"
                                 elif crypto_max_hold_sec > 0 and held_sec >= crypto_max_hold_sec:
                                     exit_reason = "MAX_HOLD"
+                                elif intelligence_enabled and bool(intel.get("exit_bias")):
+                                    exit_reason = "INTELLIGENCE_EXIT"
                                 elif sig < 0:
                                     exit_reason = "SIGNAL_FLIP"
                                 if exit_reason:
@@ -1704,6 +1839,8 @@ def main() -> None:
                                     last_trade_ts[k] = now_crypto_ts
                                     st["action"] = f"SELL_ALL:{exit_reason}"
                                     notes.append(f"CRYPTO SELL {sym} reason={exit_reason} pnl={pnl_pct:.4%}")
+                                    if intelligence_enabled:
+                                        intelligence.record_decision(sym, "CRYPTO", st.get("price"), sig, st["action"], intel)
                                     position_peak_price.pop(k, None)
                                     position_seen_ts.pop(k, None)
                                     symbols_state[sym] = st
@@ -1741,7 +1878,9 @@ def main() -> None:
                                 st["debug"]["entry_confirmations"] = confirmations
                                 st["debug"]["entry_confirmations_required"] = crypto_entry_confirm_bars
 
-                                if quote_is_stale:
+                                if intelligence_enabled and not bool(intel.get("entry_allowed")):
+                                    st["action"] = f"WAIT_INTEL:{float(intel.get('score', 0)):.0f}"
+                                elif quote_is_stale:
                                     st["action"] = "QUOTE_STALE"
                                 elif risk_blocked:
                                     st["action"] = "RISK_BLOCKED"
@@ -1764,13 +1903,18 @@ def main() -> None:
                                     st["action"] = f"BUY ${crypto_notional_usd:.0f}"
                                     notes.append(
                                         f"CRYPTO {crypto_strategy_mode.upper()} BUY {sym} ${crypto_notional_usd:.2f} "
-                                        f"est_cost={estimated_rt_cost_bps:.1f}bps est_net={estimated_net_edge_bps:.1f}bps"
+                                        f"est_cost={estimated_rt_cost_bps:.1f}bps est_net={estimated_net_edge_bps:.1f}bps "
+                                        f"intel={float(intel.get('score', 0)):.1f}"
                                     )
+                                    if intelligence_enabled:
+                                        intelligence.record_decision(sym, "CRYPTO", st.get("price"), sig, st["action"], intel)
                                     crypto_position_count += 1
                             else:
                                 st["action"] = "QUOTE_STALE" if quote_is_stale else "HOLD"
                         except Exception as e:
                             st["error"] = str(e)
+                        if intelligence_enabled and st.get("price"):
+                            intelligence.update_learning_outcomes(sym, st.get("price"))
                         symbols_state[sym] = st
 
             out = {
@@ -1791,6 +1935,7 @@ def main() -> None:
                 "last_update": utc_now_iso(),
                 "day_pnl_usd": round(day_pnl, 2),
                 "risk_blocked": risk_blocked,
+                "intelligence": intelligence.summary() if intelligence_enabled else {"enabled": False},
                 "daily_loss_limit_usd_effective": round(effective_daily_loss_limit, 2),
                 "notes": " | ".join([n for n in notes if n]).strip(),
                 "symbols": symbols_state,

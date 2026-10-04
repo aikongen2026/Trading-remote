@@ -9,6 +9,52 @@ import time
 import traceback
 from pathlib import Path
 
+
+def _strip_env_value(v: str) -> str:
+    v = (v or "").strip().lstrip("\ufeff").strip()
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+        v = v[1:-1].strip()
+    return v
+
+
+def _load_bootstrap_env() -> None:
+    """Load local/Render secret files before importing dashboard/engine modules.
+
+    Supported files (first existing values win only when the process environment
+    does not already define the key):
+      /etc/secrets/tradingbot.env   <- recommended on Render
+      /etc/secrets/alpaca_keys.env
+      ./tradingbot.env              <- convenient local/VPS file
+      ./.env                         <- legacy local file
+    """
+    here = Path(__file__).resolve().parent
+    paths = [
+        Path('/etc/secrets/tradingbot.env'),
+        Path('/etc/secrets/alpaca_keys.env'),
+        here / 'tradingbot.env',
+        here / 'ALPACA_KEYS.env',
+        here / '.env',
+    ]
+    for path in paths:
+        if not path.exists():
+            continue
+        try:
+            for raw in path.read_text(encoding='utf-8-sig', errors='replace').splitlines():
+                line = raw.strip()
+                if not line or line.startswith('#') or '=' not in line:
+                    continue
+                key, value = line.split('=', 1)
+                key = key.strip()
+                value = _strip_env_value(value)
+                if key and value:
+                    os.environ.setdefault(key, value)
+            print(f'Loaded config file: {path}')
+        except Exception as exc:
+            print(f'WARNING: could not read config file {path}: {exc}')
+
+
+_load_bootstrap_env()
+
 from waitress import serve
 
 import trading_bot
@@ -45,6 +91,16 @@ def engine_target() -> None:
             return
         set_engine_status("STOPPED", "Trading engine avsluttet; watchdog vurderer restart.")
     except Exception as e:
+        msg = str(e)
+        if "Mangler Alpaca keys" in msg or "Alpaca keys" in msg and "mangler" in msg.lower():
+            # Missing configuration is not a crash. Stop the watchdog restart loop
+            # and show one clear setup message in the dashboard.
+            set_engine_status(
+                "AUTH_ERROR",
+                "Mangler Alpaca-noekler. Paa Render: Environment -> Secret Files -> "
+                "legg til tradingbot.env med ALPACA_KEY og ALPACA_SECRET, saa redeploy.",
+            )
+            return
         traceback.print_exc()
         set_engine_status("CRASHED", f"Engine crash: {e}")
 

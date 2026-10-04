@@ -1,0 +1,14 @@
+*.log
+*.pyc
+*.secret.env
+.DS_Store
+.cloud_initialized
+.env
+.venv/
+ALPACA_KEYS.env
+RENDER_NOKLER_TEMPLATE.env
+__pycache__/
+intelligence_v3.json
+learning_v3.sqlite*
+status.json
+tradingbot.env
