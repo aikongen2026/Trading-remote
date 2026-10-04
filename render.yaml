@@ -1,0 +1,36 @@
+services:
+  - type: web
+    name: tradingbot-remote
+    runtime: python
+    region: frankfurt
+    plan: 0.5c-512mb
+    buildCommand: pip install -r requirements.txt
+    startCommand: python cloud_app.py
+    healthCheckPath: /healthz
+    envVars:
+      - key: ALPACA_KEY
+        sync: false
+      - key: ALPACA_SECRET
+        sync: false
+      - key: ALPACA_PAPER
+        value: "true"
+      - key: ALPACA_DATA_FEED
+        value: iex
+      - key: DASHBOARD_PASSWORD
+        sync: false
+      - key: DASHBOARD_SECRET_KEY
+        generateValue: true
+      - key: PUBLIC_MODE
+        value: "true"
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: CLOUD_SAFE_START
+        value: "true"
+      - key: ENGINE_AUTORESTART
+        value: "true"
+      - key: TRADINGBOT_STATE_DIR
+        value: /var/data/tradingbot
+    disk:
+      name: tradingbot-state
+      mountPath: /var/data
+      sizeGB: 1

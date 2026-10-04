@@ -1,0 +1,16 @@
+services:
+  tradingbot:
+    build: .
+    restart: unless-stopped
+    env_file: .env.server
+    environment:
+      PORT: "10000"
+      PUBLIC_MODE: "true"
+      COOKIE_SECURE: "false"
+      TRADINGBOT_STATE_DIR: /var/data/tradingbot
+      ENGINE_AUTORESTART: "true"
+      CLOUD_SAFE_START: "false"
+    ports:
+      - "5050:10000"
+    volumes:
+      - ./server_state:/var/data/tradingbot
