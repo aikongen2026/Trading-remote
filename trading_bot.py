@@ -494,6 +494,19 @@ class AlpacaRest:
     def account(self) -> Dict[str, Any]:
         return self._req("GET", f"{self.cfg.trading_base}/v2/account")
 
+    def portfolio_history(
+        self, period: str = "7D", timeframe: str = "1H", *, continuous: bool = True
+    ) -> Dict[str, Any]:
+        params: Dict[str, Any] = {
+            "period": period,
+            "timeframe": timeframe,
+            "pnl_reset": "no_reset",
+        }
+        if continuous:
+            params["intraday_reporting"] = "continuous"
+        data = self._req("GET", f"{self.cfg.trading_base}/v2/account/portfolio/history", params=params)
+        return data if isinstance(data, dict) else {}
+
     def clock(self) -> Dict[str, Any]:
         return self._req("GET", f"{self.cfg.trading_base}/v2/clock")
 
@@ -941,6 +954,75 @@ def calc_day_pnl_usd(acct: Dict[str, Any]) -> float:
         return 0.0
 
 
+def summarize_profit_windows(history: Dict[str, Any], acct: Dict[str, Any]) -> Dict[str, Any]:
+    """Build a compact account P/L summary for the dashboard.
+
+    Uses Alpaca's authoritative portfolio-history P/L series for rolling 3/7-day
+    windows and the account's current equity-vs-last_equity for today's figure.
+    The result intentionally represents the whole Alpaca account, including
+    unrealized P/L on open positions.
+    """
+    today_usd = calc_day_pnl_usd(acct)
+    try:
+        last_equity = float(acct.get("last_equity", 0) or 0)
+    except Exception:
+        last_equity = 0.0
+    today_pct = (today_usd / last_equity * 100.0) if last_equity > 0 else None
+
+    result: Dict[str, Any] = {
+        "today_usd": round(today_usd, 2),
+        "today_pct": round(today_pct, 3) if today_pct is not None else None,
+        "days3_usd": None, "days3_pct": None,
+        "days7_usd": None, "days7_pct": None,
+        "includes_open_positions": True,
+        "source": "Alpaca portfolio history",
+        "updated_at": utc_now_iso(),
+    }
+    if not isinstance(history, dict):
+        return result
+
+    timestamps = history.get("timestamp") or []
+    pnl = history.get("profit_loss") or []
+    equity = history.get("equity") or []
+    rows: List[Tuple[float, float, Optional[float]]] = []
+    n = min(len(timestamps), len(pnl))
+    for i in range(n):
+        try:
+            ts = float(timestamps[i])
+            pv = float(pnl[i])
+        except Exception:
+            continue
+        ev: Optional[float] = None
+        if i < len(equity):
+            try:
+                ev = float(equity[i])
+            except Exception:
+                ev = None
+        rows.append((ts, pv, ev))
+    if len(rows) < 2:
+        return result
+    rows.sort(key=lambda x: x[0])
+    end_ts, end_pnl, _ = rows[-1]
+
+    def window(days: int) -> Tuple[Optional[float], Optional[float]]:
+        target = end_ts - days * 86400.0
+        base = rows[0]
+        for row in rows:
+            if row[0] <= target:
+                base = row
+            else:
+                break
+        delta = end_pnl - base[1]
+        base_equity = base[2]
+        pct = (delta / base_equity * 100.0) if base_equity and base_equity > 0 else None
+        return round(delta, 2), (round(pct, 3) if pct is not None else None)
+
+    d3, p3 = window(3)
+    d7, p7 = window(7)
+    result.update({"days3_usd": d3, "days3_pct": p3, "days7_usd": d7, "days7_pct": p7})
+    return result
+
+
 def json_safe_order(o: Dict[str, Any]) -> Dict[str, Any]:
     out = dict(o)
     if "id" in out:
@@ -1201,6 +1283,7 @@ def main() -> None:
     cached_account: Dict[str, Any] = {"value": acct if isinstance(acct, dict) else {}, "ts": time.time() if acct else 0.0}
     cached_positions: Dict[str, Any] = {"value": [], "ts": 0.0}
     cached_orders: Dict[str, Any] = {"value": [], "ts": 0.0}
+    cached_profit_history: Dict[str, Any] = {"value": {}, "ts": 0.0}
 
     # Intelligence + research-edge profit engine run behind the existing simple dashboard.
     # Intelligence scores context; ProfitEngine converts it into cost/volatility/EV-aware plans.
@@ -1344,7 +1427,7 @@ def main() -> None:
             now_api = time.time()
 
             future_map: Dict[Any, str] = {}
-            with ThreadPoolExecutor(max_workers=4) as pool:
+            with ThreadPoolExecutor(max_workers=5) as pool:
                 if (now_api - cached_account["ts"]) >= 5.0:
                     future_map[pool.submit(api.account)] = "account"
                 if (now_api - cached_positions["ts"]) >= 2.0:
@@ -1353,6 +1436,8 @@ def main() -> None:
                     future_map[pool.submit(api.get_orders, 100, "all", True)] = "orders"
                 if (now_api - cached_clock["ts"]) >= 10.0:
                     future_map[pool.submit(api.clock)] = "clock"
+                if (now_api - cached_profit_history["ts"]) >= 60.0:
+                    future_map[pool.submit(api.portfolio_history, "7D", "1H")] = "profit_history"
 
                 results: Dict[str, Any] = {}
                 for fut in as_completed(future_map):
@@ -1374,6 +1459,9 @@ def main() -> None:
             if isinstance(results.get("clock"), dict):
                 cached_clock["value"] = results["clock"]
                 cached_clock["ts"] = time.time()
+            if isinstance(results.get("profit_history"), dict):
+                cached_profit_history["value"] = results["profit_history"]
+                cached_profit_history["ts"] = time.time()
 
             acct = cached_account.get("value") or {}
             account_equity = 0.0
@@ -1383,6 +1471,8 @@ def main() -> None:
                     account_equity = float(acct.get("equity", 0) or 0)
                 except Exception:
                     account_equity = 0.0
+
+            profit_summary = summarize_profit_windows(cached_profit_history.get("value") or {}, acct)
 
             pos_raw = cached_positions.get("value") or []
             positions_map = positions_to_map(pos_raw if isinstance(pos_raw, list) else [])
@@ -2203,11 +2293,12 @@ def main() -> None:
                 "crypto_strategy_mode": crypto_strategy_mode,
                 "last_update": utc_now_iso(),
                 "day_pnl_usd": round(day_pnl, 2),
+                "profit_summary": profit_summary,
                 "risk_blocked": risk_blocked,
                 "intelligence": intelligence.summary() if intelligence_enabled else {"enabled": False},
                 "profit_engine": {
                     "enabled": bool(profit_engine_enabled),
-                    "version": "4.0-research-edge",
+                    "version": "4.1-profit-panel",
                     "broker_brackets": bool(broker_bracket_enabled),
                     "journal": "learning_v3.sqlite",
                 },
