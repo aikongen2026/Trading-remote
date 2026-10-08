@@ -131,7 +131,7 @@
   "activity_profile": "active",
   "intelligence_entry_score": 60,
   "intelligence_exit_score": 38,
-  "config_version": 4,
+  "config_version": 5,
   "max_positions_per_group": 2,
   "version": "3.0-intelligence",
   "profit_engine_enabled": true,
@@ -145,5 +145,8 @@
   "stock_risk_pct_equity": 0.0005,
   "crypto_risk_pct_equity": 0.00035,
   "min_live_calibration_samples": 50.0,
-  "allow_unvalidated_live": false
+  "allow_unvalidated_live": false,
+  "soft_exit_min_hold_sec": 20,
+  "soft_exit_confirm_sec": 10,
+  "entry_require_signal_reset": true
 }

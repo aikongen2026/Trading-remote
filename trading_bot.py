@@ -34,6 +34,7 @@ from urllib.parse import quote as url_quote
 import requests
 from intelligence_engine import IntelligenceEngine, group_for_symbol
 from profit_engine import ProfitEngine
+from execution_guard import ExecutionGuard
 
 try:
     import tkinter as tk
@@ -66,7 +67,7 @@ def acquire_single_instance_socket() -> socket.socket:
 
 
 DEFAULT_CONTROL: Dict[str, Any] = {
-    "config_version": 4,
+    "config_version": 5,
     "paused": True,
     "kill": False,
     "armed": False,
@@ -143,6 +144,10 @@ DEFAULT_CONTROL: Dict[str, Any] = {
     "crypto_risk_pct_equity": 0.00035,
     "min_live_calibration_samples": 50.0,
     "allow_unvalidated_live": False,
+    # V4.2 execution-safety: soft strategy exits must persist briefly; hard risk exits remain immediate.
+    "soft_exit_min_hold_sec": 20,
+    "soft_exit_confirm_sec": 10,
+    "entry_require_signal_reset": True,
     "test_buy": {"symbol": "AAPL", "qty": 1, "go": False},
     "test_sell_all": {"symbol": "AAPL", "go": False},
 }
@@ -455,6 +460,7 @@ class AlpacaRest:
         params: Dict[str, Any] | None = None,
         json_body: Any | None = None,
         timeout: Tuple[int, int] = (4, 20),
+        allow_404: bool = False,
     ) -> Any:
         last_error: Optional[Exception] = None
         for attempt in range(3):
@@ -470,6 +476,8 @@ class AlpacaRest:
                             pass
                     time.sleep(delay)
                     continue
+                if allow_404 and r.status_code == 404:
+                    return None
                 if r.status_code in (401, 403):
                     raise AlpacaAuthError(
                         f"Alpaca authentication failed ({r.status_code}). "
@@ -530,6 +538,7 @@ class AlpacaRest:
         order_type: str = "market",
         limit_price: Optional[float] = None,
         extended_hours: bool = False,
+        client_order_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         body: Dict[str, Any] = {
             "symbol": symbol,
@@ -544,6 +553,8 @@ class AlpacaRest:
             body["limit_price"] = f"{float(limit_price):.4f}"
         if extended_hours:
             body["extended_hours"] = True
+        if client_order_id:
+            body["client_order_id"] = str(client_order_id)
         return self._req("POST", f"{self.cfg.trading_base}/v2/orders", json_body=body)
 
     @staticmethod
@@ -552,7 +563,8 @@ class AlpacaRest:
         return f"{p:.2f}" if p >= 1.0 else f"{p:.4f}"
 
     def submit_bracket_order(
-        self, symbol: str, qty: float, take_profit_price: float, stop_price: float, tif: str = "day"
+        self, symbol: str, qty: float, take_profit_price: float, stop_price: float, tif: str = "day",
+        client_order_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         body: Dict[str, Any] = {
             "symbol": symbol, "side": "buy", "type": "market", "time_in_force": tif,
@@ -561,7 +573,16 @@ class AlpacaRest:
             "take_profit": {"limit_price": self._price_str(take_profit_price)},
             "stop_loss": {"stop_price": self._price_str(stop_price)},
         }
+        if client_order_id:
+            body["client_order_id"] = str(client_order_id)
         return self._req("POST", f"{self.cfg.trading_base}/v2/orders", json_body=body)
+
+    def get_order_by_client_order_id(self, client_order_id: str) -> Optional[Dict[str, Any]]:
+        data = self._req(
+            "GET", f"{self.cfg.trading_base}/v2/orders:by_client_order_id",
+            params={"client_order_id": str(client_order_id)}, allow_404=True,
+        )
+        return data if isinstance(data, dict) else None
 
     def cancel_order(self, order_id: str) -> Any:
         return self._req("DELETE", f"{self.cfg.trading_base}/v2/orders/{order_id}")
@@ -657,6 +678,7 @@ class AlpacaRest:
         *,
         tif: str = "gtc",
         order_type: str = "market",
+        client_order_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         body: Dict[str, Any] = {
             "symbol": symbol,
@@ -665,6 +687,8 @@ class AlpacaRest:
             "time_in_force": tif,
             "notional": f"{float(notional):.2f}",
         }
+        if client_order_id:
+            body["client_order_id"] = str(client_order_id)
         return self._req("POST", f"{self.cfg.trading_base}/v2/orders", json_body=body)
 
     def crypto_quotes_latest(self, symbols: List[str]) -> Dict[str, Dict[str, Any]]:
@@ -1293,6 +1317,8 @@ def main() -> None:
     )
     profit_engine = ProfitEngine(STATE_DIR)
     trade_plans = load_trade_plans()
+    execution_guard = ExecutionGuard(STATE_DIR)
+    soft_exit_since: Dict[str, Tuple[str, float]] = {}
 
     while True:
         loop_start = time.time()
@@ -1387,6 +1413,9 @@ def main() -> None:
             crypto_risk_pct_equity = max(0.00005, float(control.get("crypto_risk_pct_equity", 0.00035) or 0.00035))
             min_live_calibration_samples = max(0.0, float(control.get("min_live_calibration_samples", 50.0) or 0.0))
             allow_unvalidated_live = bool(control.get("allow_unvalidated_live", False))
+            soft_exit_min_hold_sec = max(0, int(control.get("soft_exit_min_hold_sec", 20) or 0))
+            soft_exit_confirm_sec = max(0, int(control.get("soft_exit_confirm_sec", 10) or 0))
+            entry_require_signal_reset = bool(control.get("entry_require_signal_reset", True))
 
             daily_loss_limit_usd = float(control.get("daily_loss_limit_usd", 0.0) or 0.0)
             daily_loss_limit_pct = max(0.0, float(control.get("daily_loss_limit_pct", 0.02) or 0.0))
@@ -1780,6 +1809,8 @@ def main() -> None:
                             live_price = float(st["price"])
                             pnl_pct = pct_change(avg_entry, live_price)
                             st["debug"]["position_pnl_pct"] = round(pnl_pct, 6)
+                            if entry_require_signal_reset and not execution_guard.entry_blocked("STOCK", sym):
+                                execution_guard.block_entry("STOCK", sym, "existing_position")
 
                             if sym not in position_seen_ts:
                                 position_seen_ts[sym] = now_ts
@@ -1800,7 +1831,26 @@ def main() -> None:
                             st["debug"]["active_sl_pct"] = round(sl_pct, 6)
                             st["debug"]["broker_bracket"] = broker_bracket
 
+                            # If an exit was already started in a previous loop/restart, finish reconciling it
+                            # before any strategy rule is allowed to submit another sell.
+                            existing_exit = execution_guard.get_exit("STOCK", sym)
+                            if existing_exit:
+                                action = execution_guard.advance_exit(
+                                    api, orders, market="STOCK", symbol=sym, position_qty=float(st["pos_qty"]),
+                                    reason=str(existing_exit.get("latest_reason") or existing_exit.get("reason") or "PENDING_EXIT"),
+                                    regular_market_open=regular_market_open, extended_session_open=extended_session_open,
+                                    bid=float(st.get("bid") or 0) if st.get("bid") else None,
+                                    extended_limit_buffer_bps=extended_limit_buffer_bps,
+                                )
+                                st["action"] = action
+                                st["debug"]["exit_intent"] = existing_exit
+                                if action == "EXIT_RECONCILE_REQUIRED":
+                                    notes.append(f"ORDER RECONCILE REQUIRED {sym}")
+                                symbols_state[sym] = st
+                                continue
+
                             exit_reason = ""
+                            soft_reason = ""
                             # Broker-side bracket owns hard TP/SL during regular hours. This keeps
                             # protection alive even if the Render process restarts.
                             if not broker_bracket and tp_pct > 0 and pnl_pct >= tp_pct:
@@ -1816,37 +1866,47 @@ def main() -> None:
                             elif max_hold_sec > 0 and held_sec >= max_hold_sec:
                                 exit_reason = "MAX_HOLD"
                             elif intelligence_enabled and bool(intel.get("exit_bias")):
-                                exit_reason = "INTELLIGENCE_EXIT"
+                                soft_reason = "INTELLIGENCE_EXIT"
                             elif sig < 0:
-                                exit_reason = "SIGNAL_FLIP"
+                                soft_reason = "SIGNAL_FLIP"
+
+                            # Soft strategy exits are confirmed for a short period to avoid 2-3 second
+                            # buy/sell churn. Hard TP/SL/trailing/max-hold remain immediate.
+                            soft_key = f"STOCK:{sym}"
+                            if soft_reason and not exit_reason:
+                                prior = soft_exit_since.get(soft_key)
+                                if not prior or prior[0] != soft_reason:
+                                    soft_exit_since[soft_key] = (soft_reason, now_ts)
+                                    prior = soft_exit_since[soft_key]
+                                soft_age = max(0.0, now_ts - prior[1])
+                                st["debug"]["soft_exit_reason"] = soft_reason
+                                st["debug"]["soft_exit_age_sec"] = round(soft_age, 1)
+                                if held_sec >= soft_exit_min_hold_sec and soft_age >= soft_exit_confirm_sec:
+                                    exit_reason = soft_reason
+                                else:
+                                    st["action"] = f"CONFIRM_EXIT:{soft_reason}"
+                            else:
+                                soft_exit_since.pop(soft_key, None)
+
+                            if soft_reason and not exit_reason:
+                                symbols_state[sym] = st
+                                continue
 
                             if exit_reason:
-                                # Cancel any bracket child exits before an intelligent/manual exit.
-                                cancel_open_orders_for_symbol(api, orders, sym)
-                                if regular_market_open:
-                                    api.close_position(sym)
-                                else:
-                                    if not extended_session_open or not st.get("bid"):
-                                        st["action"] = "WAIT_EXTENDED_QUOTE"
-                                        symbols_state[sym] = st
-                                        continue
-                                    sell_limit = max(0.01, float(st["bid"]) * (1.0 - extended_limit_buffer_bps / 10000.0))
-                                    api.submit_order(
-                                        sym, "sell", float(st["pos_qty"]), tif="day", order_type="limit",
-                                        limit_price=sell_limit, extended_hours=True,
-                                    )
-                                popup_trade(f"SELL ALL {sym} ({exit_reason})")
+                                action = execution_guard.advance_exit(
+                                    api, orders, market="STOCK", symbol=sym, position_qty=float(st["pos_qty"]),
+                                    reason=exit_reason, regular_market_open=regular_market_open,
+                                    extended_session_open=extended_session_open,
+                                    bid=float(st.get("bid") or 0) if st.get("bid") else None,
+                                    extended_limit_buffer_bps=extended_limit_buffer_bps,
+                                )
+                                popup_trade(f"SELL {sym} ({exit_reason})")
                                 last_trade_ts[sym] = now_ts
-                                st["action"] = f"SELL_ALL:{exit_reason}"
-                                notes.append(f"AUTO SELL {sym} reason={exit_reason} pnl={pnl_pct:.4%}")
+                                st["action"] = action
+                                notes.append(f"AUTO EXIT {sym} reason={exit_reason} state={action} pnl={pnl_pct:.4%}")
                                 if intelligence_enabled:
                                     intel_log = intelligence_with_plan(intel, active_plan)
-                                    intelligence.record_decision(sym, "STOCK", st.get("price"), sig, st["action"], intel_log)
-                                position_peak_price.pop(sym, None)
-                                position_seen_ts.pop(sym, None)
-                                if pkey in trade_plans:
-                                    trade_plans.pop(pkey, None)
-                                    save_trade_plans(trade_plans)
+                                    intelligence.record_decision(sym, "STOCK", st.get("price"), sig, action, intel_log)
                                 symbols_state[sym] = st
                                 continue
 
@@ -1857,8 +1917,18 @@ def main() -> None:
                         else:
                             position_peak_price.pop(sym, None)
                             position_seen_ts.pop(sym, None)
-                            # Clear an orphaned plan only after entry/bracket orders are gone.
-                            if pkey in trade_plans and not has_open_order_for_symbol(orders, sym):
+                            soft_exit_since.pop(f"STOCK:{sym}", None)
+                            if execution_guard.get_exit("STOCK", sym):
+                                execution_guard.advance_exit(
+                                    api, orders, market="STOCK", symbol=sym, position_qty=0.0, reason="POSITION_CLOSED",
+                                    regular_market_open=regular_market_open, extended_session_open=extended_session_open,
+                                    bid=float(st.get("bid") or 0) if st.get("bid") else None,
+                                    extended_limit_buffer_bps=extended_limit_buffer_bps,
+                                )
+                            if sig <= 0 and entry_require_signal_reset and not has_open_order_for_symbol(orders, sym) and not execution_guard.get_exit("STOCK", sym):
+                                execution_guard.rearm_entry("STOCK", sym)
+                            # Clear an orphaned plan only after entry/bracket orders and exit reconciliation are gone.
+                            if pkey in trade_plans and not has_open_order_for_symbol(orders, sym) and not execution_guard.get_exit("STOCK", sym):
                                 trade_plans.pop(pkey, None)
                                 save_trade_plans(trade_plans)
                                 saved_plan = {}
@@ -1893,6 +1963,8 @@ def main() -> None:
                             elif (not cfg.paper and profit_engine_enabled and profit_plan is not None
                                   and not allow_unvalidated_live and profit_plan.calibration_samples < min_live_calibration_samples):
                                 st["action"] = f"WAIT_VALIDATION:{profit_plan.calibration_samples:.0f}/{min_live_calibration_samples:.0f}"
+                            elif entry_require_signal_reset and execution_guard.entry_blocked("STOCK", sym):
+                                st["action"] = "WAIT_NEW_SIGNAL"
                             elif quote_is_stale:
                                 st["action"] = "QUOTE_STALE"
                             elif risk_blocked:
@@ -1918,6 +1990,10 @@ def main() -> None:
                                     "qty": qty, "expected_value_bps": None, "probability_up_pct": None,
                                 }
                                 broker_bracket = False
+                                # Use a unique client id for audit/reconciliation, while the persistent latch
+                                # prevents a filled/quickly-closed trade from re-entering on the same stale signal.
+                                from execution_guard import make_client_order_id as _make_cid
+                                entry_cid = _make_cid("tbe-", "STOCK", sym)
                                 if regular_market_open:
                                     if broker_bracket_enabled and profit_engine_enabled and profit_plan is not None:
                                         ref_price = float(st.get("ask") or st.get("price") or 0)
@@ -1927,10 +2003,10 @@ def main() -> None:
                                             continue
                                         tp_price = ref_price * (1.0 + float(profit_plan.take_profit_pct))
                                         stop_price = ref_price * (1.0 - float(profit_plan.stop_loss_pct))
-                                        api.submit_bracket_order(sym, qty, tp_price, stop_price, tif="day")
+                                        api.submit_bracket_order(sym, qty, tp_price, stop_price, tif="day", client_order_id=entry_cid)
                                         broker_bracket = True
                                     else:
-                                        api.submit_order(sym, "buy", qty, tif="day")
+                                        api.submit_order(sym, "buy", qty, tif="day", client_order_id=entry_cid)
                                 else:
                                     if not extended_session_open or not st.get("ask"):
                                         st["action"] = "WAIT_EXTENDED_QUOTE"
@@ -1939,8 +2015,9 @@ def main() -> None:
                                     buy_limit = float(st["ask"]) * (1.0 + extended_limit_buffer_bps / 10000.0)
                                     api.submit_order(
                                         sym, "buy", qty, tif="day", order_type="limit",
-                                        limit_price=buy_limit, extended_hours=True,
+                                        limit_price=buy_limit, extended_hours=True, client_order_id=entry_cid,
                                     )
+                                execution_guard.block_entry("STOCK", sym, "entry_submitted", entry_cid)
                                 plan_to_save.update({
                                     "broker_bracket": broker_bracket,
                                     "created_at": utc_now_iso(),
@@ -2166,7 +2243,23 @@ def main() -> None:
                                 st["debug"]["active_tp_pct"] = round(tp_pct, 6)
                                 st["debug"]["active_sl_pct"] = round(sl_pct, 6)
 
+                                if entry_require_signal_reset and not execution_guard.entry_blocked("CRYPTO", sym):
+                                    execution_guard.block_entry("CRYPTO", sym, "existing_position")
+
+                                existing_exit = execution_guard.get_exit("CRYPTO", sym)
+                                if existing_exit:
+                                    action = execution_guard.advance_exit(
+                                        api, orders, market="CRYPTO", symbol=sym, position_qty=float(st["pos_qty"]),
+                                        reason=str(existing_exit.get("latest_reason") or existing_exit.get("reason") or "PENDING_EXIT"),
+                                    )
+                                    st["action"] = action
+                                    if action == "EXIT_RECONCILE_REQUIRED":
+                                        notes.append(f"ORDER RECONCILE REQUIRED {sym}")
+                                    symbols_state[sym] = st
+                                    continue
+
                                 exit_reason = ""
+                                soft_reason = ""
                                 if tp_pct > 0 and pnl_pct >= tp_pct:
                                     exit_reason = "TAKE_PROFIT"
                                 elif sl_pct > 0 and pnl_pct <= -sl_pct:
@@ -2178,23 +2271,40 @@ def main() -> None:
                                 elif crypto_max_hold_sec > 0 and held_sec >= crypto_max_hold_sec:
                                     exit_reason = "MAX_HOLD"
                                 elif intelligence_enabled and bool(intel.get("exit_bias")):
-                                    exit_reason = "INTELLIGENCE_EXIT"
+                                    soft_reason = "INTELLIGENCE_EXIT"
                                 elif sig < 0:
-                                    exit_reason = "SIGNAL_FLIP"
+                                    soft_reason = "SIGNAL_FLIP"
+
+                                soft_key = f"CRYPTO:{sym}"
+                                if soft_reason and not exit_reason:
+                                    prior = soft_exit_since.get(soft_key)
+                                    if not prior or prior[0] != soft_reason:
+                                        soft_exit_since[soft_key] = (soft_reason, now_crypto_ts)
+                                        prior = soft_exit_since[soft_key]
+                                    soft_age = max(0.0, now_crypto_ts - prior[1])
+                                    if held_sec >= soft_exit_min_hold_sec and soft_age >= soft_exit_confirm_sec:
+                                        exit_reason = soft_reason
+                                    else:
+                                        st["action"] = f"CONFIRM_EXIT:{soft_reason}"
+                                else:
+                                    soft_exit_since.pop(soft_key, None)
+
+                                if soft_reason and not exit_reason:
+                                    symbols_state[sym] = st
+                                    continue
+
                                 if exit_reason:
-                                    api.submit_order(sym, "sell", float(st["pos_qty"]), tif="gtc", order_type="market")
-                                    popup_trade(f"CRYPTO SELL {sym} ({exit_reason})")
+                                    action = execution_guard.advance_exit(
+                                        api, orders, market="CRYPTO", symbol=sym, position_qty=float(st["pos_qty"]),
+                                        reason=exit_reason,
+                                    )
+                                    popup_trade(f"CRYPTO EXIT {sym} ({exit_reason})")
                                     last_trade_ts[k] = now_crypto_ts
-                                    st["action"] = f"SELL_ALL:{exit_reason}"
-                                    notes.append(f"CRYPTO SELL {sym} reason={exit_reason} pnl={pnl_pct:.4%}")
+                                    st["action"] = action
+                                    notes.append(f"CRYPTO EXIT {sym} reason={exit_reason} state={action} pnl={pnl_pct:.4%}")
                                     if intelligence_enabled:
                                         intel_log = intelligence_with_plan(intel, active_plan)
-                                        intelligence.record_decision(sym, "CRYPTO", st.get("price"), sig, st["action"], intel_log)
-                                    position_peak_price.pop(k, None)
-                                    position_seen_ts.pop(k, None)
-                                    if k in trade_plans:
-                                        trade_plans.pop(k, None)
-                                        save_trade_plans(trade_plans)
+                                        intelligence.record_decision(sym, "CRYPTO", st.get("price"), sig, action, intel_log)
                                     symbols_state[sym] = st
                                     continue
 
@@ -2205,7 +2315,14 @@ def main() -> None:
                             else:
                                 position_peak_price.pop(k, None)
                                 position_seen_ts.pop(k, None)
-                                if k in trade_plans and not has_open_order_for_symbol(orders, sym):
+                                soft_exit_since.pop(f"CRYPTO:{sym}", None)
+                                if execution_guard.get_exit("CRYPTO", sym):
+                                    execution_guard.advance_exit(
+                                        api, orders, market="CRYPTO", symbol=sym, position_qty=0.0, reason="POSITION_CLOSED",
+                                    )
+                                if sig <= 0 and entry_require_signal_reset and not has_open_order_for_symbol(orders, sym) and not execution_guard.get_exit("CRYPTO", sym):
+                                    execution_guard.rearm_entry("CRYPTO", sym)
+                                if k in trade_plans and not has_open_order_for_symbol(orders, sym) and not execution_guard.get_exit("CRYPTO", sym):
                                     trade_plans.pop(k, None)
                                     save_trade_plans(trade_plans)
                                     saved_plan = {}
@@ -2231,6 +2348,8 @@ def main() -> None:
                                 elif (not cfg.paper and profit_engine_enabled and profit_plan is not None
                                       and not allow_unvalidated_live and profit_plan.calibration_samples < min_live_calibration_samples):
                                     st["action"] = f"WAIT_VALIDATION:{profit_plan.calibration_samples:.0f}/{min_live_calibration_samples:.0f}"
+                                elif entry_require_signal_reset and execution_guard.entry_blocked("CRYPTO", sym):
+                                    st["action"] = "WAIT_NEW_SIGNAL"
                                 elif quote_is_stale:
                                     st["action"] = "QUOTE_STALE"
                                 elif risk_blocked:
@@ -2247,7 +2366,10 @@ def main() -> None:
                                     st["action"] = "MAX_CRYPTO_POSITIONS"
                                 else:
                                     notional = float(profit_plan.notional_usd) if profit_engine_enabled and profit_plan is not None else crypto_notional_usd
-                                    api.submit_notional_order(sym, "buy", notional, tif="gtc", order_type="market")
+                                    from execution_guard import make_client_order_id as _make_cid
+                                    entry_cid = _make_cid("tbe-", "CRYPTO", sym)
+                                    api.submit_notional_order(sym, "buy", notional, tif="gtc", order_type="market", client_order_id=entry_cid)
+                                    execution_guard.block_entry("CRYPTO", sym, "entry_submitted", entry_cid)
                                     plan_to_save = profit_plan.to_dict() if profit_plan is not None else {
                                         "take_profit_pct": crypto_take_profit_pct, "stop_loss_pct": crypto_stop_loss_pct,
                                         "trailing_activate_pct": crypto_trailing_activate_pct, "trailing_stop_pct": crypto_trailing_stop_pct,
@@ -2298,10 +2420,11 @@ def main() -> None:
                 "intelligence": intelligence.summary() if intelligence_enabled else {"enabled": False},
                 "profit_engine": {
                     "enabled": bool(profit_engine_enabled),
-                    "version": "4.1-profit-panel",
+                    "version": "4.2-order-safety",
                     "broker_brackets": bool(broker_bracket_enabled),
                     "journal": "learning_v3.sqlite",
                 },
+                "execution_guard": execution_guard.summary(),
                 "daily_loss_limit_usd_effective": round(effective_daily_loss_limit, 2),
                 "notes": " | ".join([n for n in notes if n]).strip(),
                 "symbols": symbols_state,

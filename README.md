@@ -1,29 +1,23 @@
-# TradingBot Research Edge V4
+# TradingBot Research Edge V4.2
 
-Remote Alpaca paper-trading bot with a deliberately simple PC/mobile dashboard and a research-backed intelligence + expected-value layer.
+Remote Alpaca paper-trading bot med enkelt PC/mobil-dashboard, intelligence/expected-value-lag og ny ordrekoordinator.
 
-V4 keeps the same controls, while the engine adds:
+V4.2 beholder V4/V4.1-funksjonene og legger særlig til:
 
-- Alpaca real-time news and live market streams with REST fallbacks
-- GDELT + Fed + BLS + EIA + SEC event intelligence
-- market regime, multi-timeframe trend and relative strength
-- medium-horizon industry/residual momentum and momentum-crash guard
-- live bid/ask microstructure / order-flow confirmation
-- volatility-adaptive take-profit / stop-loss
-- estimated probability + expected value after spread, slippage and fees
-- volatility/risk-based position sizing and portfolio group limits
-- broker-side bracket TP/SL for regular-hours stock entries
-- persistent SQLite learning journal with 5/15/60-minute outcomes
-- conservative live-validation gate to reduce the risk of backtest/selection overfitting
-
-The intelligence/profit layers never bypass the deterministic risk gates. A BUY signal can still become WAIT_INTEL, WAIT_EDGE, WAIT_VALIDATION, SPREAD_TOO_WIDE, RISK_BLOCKED, etc.
+- vedvarende én-exit-per-symbol koordinering
+- `client_order_id` og avstemming før retry etter timeout
+- delutførelses-sikkerhet
+- restart-sikker exit-state
+- signal-reset før ny inngang etter avsluttet handel
+- kort bekreftelse på myke signal/intelligence-exits for å redusere buy/sell-churn
+- broker-side bracket TP/SL i ordinær aksjehandel
+- dashboard-status for ordresikkerhet
+- Alpaca portfolio-equity som grunnlag for resultatpanelet
 
 ## Deploy/update
 
-The repository is linked to Render. `START_TRADINGBOT.bat` in the downloadable package copies this folder into the existing GitHub repo, pushes `main`, waits for Render to serve the matching VERSION, then opens the dashboard.
+`START_TRADINGBOT.bat` i nedlastingspakken kopierer `UPLOAD_TO_GITHUB` til eksisterende GitHub-repo, pusher `main`, venter på riktig `VERSION`, og åpner dashboardet. Render Environment beholder Alpaca-nøkler/passord og de blir ikke lagt i GitHub.
 
-Alpaca keys and dashboard password remain in Render Environment and are not committed to GitHub.
+## Viktig
 
-## Important
-
-No trading system predicts markets with certainty or guarantees profit. PAPER mode should remain enabled until enough out-of-sample observations demonstrate positive expectancy after spread, slippage and fees.
+PAPER bør brukes til nok data viser positiv forventning etter spread, slippage og gebyrer. Ingen strategi garanterer gevinst.
