@@ -12,6 +12,7 @@ DASHBOARD_PASSWORD and DASHBOARD_SECRET_KEY as environment secrets.
 from __future__ import annotations
 
 import hmac
+import io
 import json
 import os
 import secrets
@@ -20,7 +21,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict
 
-from flask import Flask, Response, jsonify, redirect, render_template_string, request, session, url_for
+from flask import Flask, Response, jsonify, redirect, render_template_string, request, session, url_for, send_file
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 HERE = Path(__file__).resolve().parent
@@ -29,7 +30,7 @@ STATE_DIR.mkdir(parents=True, exist_ok=True)
 CONTROL_PATH = STATE_DIR / "control.json"
 STATUS_PATH = STATE_DIR / "status.json"
 VERSION_PATH = HERE / "VERSION.txt"
-BOT_VERSION = VERSION_PATH.read_text(encoding="utf-8", errors="ignore").strip() if VERSION_PATH.exists() else "4.2.0-order-safety"
+BOT_VERSION = VERSION_PATH.read_text(encoding="utf-8", errors="ignore").strip() if VERSION_PATH.exists() else "4.3.0-analysis-export"
 
 app = Flask(__name__, static_folder=str(HERE / "static"), static_url_path="/static")
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
@@ -172,9 +173,9 @@ HTML = r"""
     .heroControls{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-bottom:10px}.heroControls .danger{grid-column:1/-1}.pill{display:inline-block;padding:4px 9px;border-radius:999px;font-weight:800;font-size:12px}.pill.good{background:#073c2d;color:#4bffc0}.pill.bad{background:#461425;color:#ff83a3}.pill.neutral{background:#16284a;color:#bdd0ff}.kv{display:grid;grid-template-columns:145px 1fr;gap:8px 12px;align-items:center}.kv .k{color:#a8b7d2}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.small{font-size:12px}.muted{color:#92a4c3;font-size:12px}.banner{padding:11px 12px;border-radius:11px;margin-bottom:12px;font-weight:800}.banner.bad{background:#471625;border:1px solid #92324e}.banner.good{background:#0e3a2d;border:1px solid #1e7255}.banner.warn{background:#49370e;border:1px solid #85661c}.statusline{display:flex;gap:8px;align-items:center}.dot{width:10px;height:10px;border-radius:50%;background:#71809d}.dot.ok{background:#20d98b;box-shadow:0 0 10px #20d98b}.dot.bad{background:#ff5579}
     input,select{background:#081327;color:#eaf0ff;border:1px solid #29406b;border-radius:10px;padding:11px;font-size:15px;min-height:44px}.tableWrap{overflow:auto;max-width:100%;-webkit-overflow-scrolling:touch}table{width:100%;border-collapse:collapse;font-size:13px;min-width:900px}th,td{padding:9px 8px;border-bottom:1px solid #21345a;text-align:left;white-space:nowrap}th{color:#aebedb;position:sticky;top:0;background:#0f1a33}.pos{color:#6fffc4}.neg{color:#ff7897}.navActions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.sectionSpace{margin-top:14px}.lastId{max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.loginTag{font-size:12px;color:#9eb0ce}
     .installHelp{display:none;background:#10264a;border:1px solid #2f5388;border-radius:12px;padding:10px;margin-top:8px;color:#d6e4ff;font-size:13px}
-    .statusSplit{display:grid;grid-template-columns:minmax(0,1fr) 185px;gap:14px;align-items:start}.profitBox{background:#091429;border:1px solid #2a4574;border-radius:13px;padding:11px 12px;box-shadow:inset 0 0 0 1px #ffffff05}.profitTitle{font-weight:900;font-size:14px;margin-bottom:8px;letter-spacing:.02em}.profitRow{display:grid;grid-template-columns:62px 1fr;gap:8px;align-items:baseline;padding:7px 0;border-bottom:1px solid #20365b}.profitRow:last-of-type{border-bottom:0}.profitLabel{color:#a8b7d2;font-size:12px}.profitValue{font-weight:900;text-align:right;font-size:15px}.profitPct{display:block;font-weight:600;font-size:10px;color:#8fa2c6;margin-top:2px}.profitFoot{font-size:10px;color:#7f92b4;line-height:1.3;margin-top:8px}.profitValue.pos{color:#56f2b2}.profitValue.neg{color:#ff7897}.profitValue.neutral{color:#d8e2f7}
-    @media(max-width:980px){.statusSplit{grid-template-columns:1fr}.profitBox{max-width:none}}
-    @media(max-width:760px){.wrap{padding:8px 8px 28px}.grid{grid-template-columns:1fr}.topbar{padding-top:max(7px,env(safe-area-inset-top))}h1{font-size:21px}.card{padding:12px;border-radius:14px}.heroControls{grid-template-columns:1fr 1fr}.btn{padding:12px 13px;flex:1}.row .btn{min-width:calc(50% - 6px)}.kv{grid-template-columns:120px 1fr;font-size:14px}.navActions .btn{min-width:auto;flex:0 0 auto}.lastId{display:none}.desktopOnly{display:none}.tableWrap{margin:0 -4px}table{font-size:12px}.symbolsTable{min-width:1050px}}
+    .statusSplit{display:grid;grid-template-columns:minmax(0,1fr) 185px;gap:14px;align-items:start}.sideStack{display:grid;gap:10px}.profitBox,.exportBox{background:#091429;border:1px solid #2a4574;border-radius:13px;padding:11px 12px;box-shadow:inset 0 0 0 1px #ffffff05}.profitTitle{font-weight:900;font-size:14px;margin-bottom:8px;letter-spacing:.02em}.exportBox select{width:100%;min-height:38px;padding:8px;margin-bottom:7px}.exportBtn{width:100%;min-height:40px;padding:9px 10px;background:#12315f;border:1px solid #3765a7;border-radius:9px;color:#fff;font-weight:850;cursor:pointer}.exportBtn:hover{background:#174079}.profitRow{display:grid;grid-template-columns:62px 1fr;gap:8px;align-items:baseline;padding:7px 0;border-bottom:1px solid #20365b}.profitRow:last-of-type{border-bottom:0}.profitLabel{color:#a8b7d2;font-size:12px}.profitValue{font-weight:900;text-align:right;font-size:15px}.profitPct{display:block;font-weight:600;font-size:10px;color:#8fa2c6;margin-top:2px}.profitFoot{font-size:10px;color:#7f92b4;line-height:1.3;margin-top:8px}.profitValue.pos{color:#56f2b2}.profitValue.neg{color:#ff7897}.profitValue.neutral{color:#d8e2f7}
+    @media(max-width:980px){.statusSplit{grid-template-columns:1fr}.profitBox,.exportBox{max-width:none}.sideStack{grid-template-columns:1fr 1fr}}
+    @media(max-width:760px){.sideStack{grid-template-columns:1fr}.wrap{padding:8px 8px 28px}.grid{grid-template-columns:1fr}.topbar{padding-top:max(7px,env(safe-area-inset-top))}h1{font-size:21px}.card{padding:12px;border-radius:14px}.heroControls{grid-template-columns:1fr 1fr}.btn{padding:12px 13px;flex:1}.row .btn{min-width:calc(50% - 6px)}.kv{grid-template-columns:120px 1fr;font-size:14px}.navActions .btn{min-width:auto;flex:0 0 auto}.lastId{display:none}.desktopOnly{display:none}.tableWrap{margin:0 -4px}table{font-size:12px}.symbolsTable{min-width:1050px}}
   </style>
 </head>
 <body><div class="wrap">
@@ -208,12 +209,20 @@ HTML = r"""
         <div class="kv">
           <div class="k">Motor</div><div id="st_engine">-</div><div class="k">Versjon</div><div id="st_version" class="mono small">-</div><div class="k">Alpaca</div><div id="st_auth">-</div><div class="k">Trading</div><div id="st_running">-</div><div class="k">Ordresikkerhet</div><div id="st_guard">-</div><div class="k">Marked</div><div id="st_market">-</div><div class="k">Aksje-session</div><div id="st_session">-</div><div class="k">Crypto 24/7</div><div id="st_crypto">-</div><div class="k">Paper</div><div id="st_paper">-</div><div class="k">Strategi</div><div id="st_strategy">-</div><div class="k">Intelligence</div><div id="st_intel">-</div><div class="k">Edge-motor</div><div id="st_edge">-</div><div class="k">Markedsregime</div><div id="st_regime">-</div><div class="k">Global risiko</div><div id="st_risk">-</div><div class="k">Siste nyhet</div><div id="st_news" class="small">-</div><div class="k">PnL i dag</div><div id="st_pnl">-</div><div class="k">Sist oppdatert</div><div class="mono small" id="st_last">-</div><div class="k">Siste ordre</div><div class="mono small lastId" id="lastOrderId">-</div>
         </div>
-        <div class="profitBox">
-          <div class="profitTitle">💰 RESULTAT</div>
-          <div class="profitRow"><div class="profitLabel">I dag</div><div id="profit_today" class="profitValue neutral">-</div></div>
-          <div class="profitRow"><div class="profitLabel">3 dager</div><div id="profit_3d" class="profitValue neutral">-</div></div>
-          <div class="profitRow"><div class="profitLabel">7 dager</div><div id="profit_7d" class="profitValue neutral">-</div></div>
-          <div class="profitFoot">Alpaca portfolio equity: inkluderer åpne posisjoner og meglerens egne kontobevegelser. Oppdateres automatisk.</div>
+        <div class="sideStack">
+          <div class="profitBox">
+            <div class="profitTitle">💰 RESULTAT</div>
+            <div class="profitRow"><div class="profitLabel">I dag</div><div id="profit_today" class="profitValue neutral">-</div></div>
+            <div class="profitRow"><div class="profitLabel">3 dager</div><div id="profit_3d" class="profitValue neutral">-</div></div>
+            <div class="profitRow"><div class="profitLabel">7 dager</div><div id="profit_7d" class="profitValue neutral">-</div></div>
+            <div class="profitFoot">Alpaca portfolio equity: inkluderer åpne posisjoner og meglerens egne kontobevegelser. Oppdateres automatisk.</div>
+          </div>
+          <div class="exportBox">
+            <div class="profitTitle">📦 ANALYSE-DATA</div>
+            <select id="exportDays" aria-label="Velg analyseperiode"><option value="1">Siste 1 dag</option><option value="3">Siste 3 dager</option><option value="7" selected>Siste 7 dager</option><option value="14">Siste 14 dager</option><option value="30">Siste 30 dager</option></select>
+            <button class="exportBtn" onclick="downloadAnalysis()">⬇ LAST NED ZIP</button>
+            <div class="profitFoot">Ordre, fills, gebyrer, P/L, bot-beslutninger, edge/score og ordresikkerhet. Ingen API-nøkler.</div>
+          </div>
         </div>
       </div><div class="muted" id="st_notes" style="margin-top:10px"></div>
     </div>
@@ -242,6 +251,7 @@ async function setStrategy(){const s=document.getElementById('strategySel').valu
 async function setProfile(n){const p=n==='balanced'?{activity_profile:'balanced',intelligence_entry_score:67,intelligence_exit_score:42,strategy_mode:'scalp',fast_sma:8,slow_sma:24,hype_mom_n:5,min_mom_pct:.001,min_move_pct:.0003,min_slope_pct:.00025,cooldown_sec:90,take_profit_pct:.006,stop_loss_pct:.004,trailing_activate_pct:.003,trailing_stop_pct:.003,max_hold_sec:2700,refresh_bars_every_sec:15,crypto_strategy_mode:'scalp',crypto_cooldown_sec:60,crypto_take_profit_pct:.012,crypto_stop_loss_pct:.007,crypto_trailing_activate_pct:.007,crypto_trailing_stop_pct:.0045,crypto_max_hold_sec:3600,crypto_max_spread_bps:15,crypto_taker_fee_bps:25,crypto_min_net_edge_bps:30,crypto_entry_confirm_bars:2}:{activity_profile:'active',intelligence_entry_score:60,intelligence_exit_score:38,strategy_mode:'scalp',fast_sma:6,slow_sma:18,hype_mom_n:4,min_mom_pct:.0006,min_move_pct:.00015,min_slope_pct:.00015,cooldown_sec:45,take_profit_pct:.004,stop_loss_pct:.003,trailing_activate_pct:.002,trailing_stop_pct:.0025,max_hold_sec:1800,refresh_bars_every_sec:10,crypto_strategy_mode:'scalp',crypto_cooldown_sec:30,crypto_take_profit_pct:.01,crypto_stop_loss_pct:.006,crypto_trailing_activate_pct:.006,crypto_trailing_stop_pct:.004,crypto_max_hold_sec:2700,crypto_max_spread_bps:25,crypto_taker_fee_bps:25,crypto_min_net_edge_bps:20,crypto_entry_confirm_bars:2};await postControl('/api/control',p)}
 async function testBuy(){await postControl('/api/test_buy',{symbol:document.getElementById('buySym').value.trim().toUpperCase(),qty:Number(document.getElementById('buyQty').value||1)})}
 async function testSellAll(){await postControl('/api/test_sell_all',{symbol:document.getElementById('sellSym').value.trim().toUpperCase()})}
+function downloadAnalysis(){const el=document.getElementById('exportDays');let d=parseInt(el?.value||'7',10);if(!Number.isFinite(d))d=7;d=Math.max(1,Math.min(30,d));window.location.href='/api/export?days='+encodeURIComponent(d)}
 function renderSymbols(s){const b=document.getElementById('tblSymbols');b.innerHTML='';Object.keys(s||{}).sort((a,c)=>(s[a]?.market==='CRYPTO'?0:1)-(s[c]?.market==='CRYPTO'?0:1)||a.localeCompare(c)).forEach(sym=>{const x=s[sym]||{},sig=x.signal===1?'BUY':x.signal===-1?'SELL':(x.signal??'0');const tr=document.createElement('tr');tr.innerHTML=`<td>${x.market||'-'}</td><td><b>${sym}</b></td><td>${fmt(x.price)}</td><td>${fmt(x.bid)}</td><td>${fmt(x.ask)}</td><td>${x.debug?.spread_bps??'-'}</td><td>${x.debug?.prob_up_pct!=null?('P '+x.debug.prob_up_pct+'% / EV '+(x.debug.ev_bps>=0?'+':'')+x.debug.ev_bps+'bp'):'-'}</td><td><b>${x.debug?.intel_score??'-'}</b></td><td>${sig}</td><td>${x.pos_qty??0}</td><td>${fmt(x.avg_entry)}</td><td>${x.action||'NONE'}</td><td class="neg">${x.error||''}</td>`;b.appendChild(tr)})}
 function renderOrders(o){const b=document.getElementById('tblOrders');b.innerHTML='';(o||[]).forEach(x=>{const tr=document.createElement('tr'),t=String(x.filled_at||x.submitted_at||x.created_at||'').replace('T',' ').replace('Z','');tr.innerHTML=`<td class="mono small">${t||'-'}</td><td><b>${x.symbol||''}</b></td><td>${x.side||''}</td><td>${x.qty||x.notional||''}</td><td>${x.type||''}</td><td>${x.status||''}</td><td class="mono small">${x.id||''}</td>`;b.appendChild(tr)})}
 async function refresh(force=false){try{const r=await apiFetch('/api/status?ts='+Date.now()+(force?'&force=1':''));const s=await r.json();const live=Boolean(s.auth_ok)&&String(s.engine_state||'').toUpperCase()==='RUNNING';document.getElementById('liveDot').className='dot '+(live?'ok':'bad');document.getElementById('liveText').textContent=live?'ONLINE':'IKKE KLAR';const running=Boolean(s.armed)&&!Boolean(s.paused)&&!Boolean(s.kill);document.getElementById('st_engine').textContent=s.engine_state||'-';document.getElementById('st_version').textContent=s.version||'-';document.getElementById('st_auth').innerHTML=pill(s.auth_ok);document.getElementById('st_running').innerHTML=pill(running);const eg=s.execution_guard||{};const guardBad=Number(eg.reconcile_required||0)>0;const guardPending=Number(eg.active_exits||0)>0;document.getElementById('st_guard').innerHTML=guardBad?'<span class="pill bad">AVSTEM '+Number(eg.reconcile_required||0)+'</span>':guardPending?'<span class="pill neutral">EXIT '+Number(eg.active_exits||0)+'</span>':'<span class="pill good">OK</span>';document.getElementById('st_market').textContent=(s.market_mode||'auto').toUpperCase();document.getElementById('st_session').textContent=s.stock_session||'-';document.getElementById('st_crypto').innerHTML=pill(s.crypto_24_7);document.getElementById('st_paper').innerHTML=pill(s.paper);document.getElementById('st_strategy').textContent=s.strategy_mode||'-';const ii=s.intelligence||{};document.getElementById('st_intel').innerHTML=pill(ii.enabled!==false);const pe=s.profit_engine||{};document.getElementById('st_edge').innerHTML=pill(pe.enabled!==false);document.getElementById('st_regime').textContent=(ii.regime_label||'-')+' '+(ii.regime_score??'');document.getElementById('st_risk').textContent=(ii.global_risk??'-')+'/100';document.getElementById('st_news').textContent=ii.last_headline||'-';document.getElementById('st_pnl').textContent=fmt(s.day_pnl_usd);renderProfit(s.profit_summary||{today_usd:s.day_pnl_usd});document.getElementById('st_last').textContent=s.last_update||'';document.getElementById('st_notes').textContent=s.notes||'';document.getElementById('strategySel').value=s.strategy_mode||'scalp';document.getElementById('paperTests').style.display=s.paper===false?'none':'block';['auto','stocks','crypto'].forEach(m=>document.getElementById('m_'+m).classList.toggle('active',(s.market_mode||'auto')===m));const ab=document.getElementById('authBanner');if(s.auth_ok===false){ab.className='banner bad';ab.textContent='Alpaca avviser API-nøklene.'}else if(live){ab.className='banner good';ab.textContent=running?'Motor ONLINE – trading er STARTET.':'Motor ONLINE – trading er STOPPET/PAUSET.'}else{ab.className='banner warn';ab.textContent='Motoren starter eller restarter…'}renderSymbols(s.symbols||{});renderOrders(s.orders||[]);const lo=(s.orders||[])[0]?.id||'-';document.getElementById('lastOrderId').textContent=lo}catch(e){document.getElementById('liveDot').className='dot bad';document.getElementById('liveText').textContent='OFFLINE'}}
@@ -311,6 +321,27 @@ def api_status():
     if isinstance(st, dict): defaults.update(st)
     defaults["version"] = BOT_VERSION
     return jsonify(defaults)
+
+
+@app.get("/api/export")
+def api_export():
+    try:
+        days = int(request.args.get("days", "7"))
+    except Exception:
+        days = 7
+    if days < 1 or days > 30:
+        return jsonify({"ok": False, "error": "days_must_be_1_to_30"}), 400
+    try:
+        from trade_export import build_analysis_export
+        blob, manifest = build_analysis_export(days, STATE_DIR, BOT_VERSION)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        filename = f"TradingBot_ANALYSE_{days}d_{stamp}UTC.zip"
+        resp = send_file(io.BytesIO(blob), mimetype="application/zip", as_attachment=True, download_name=filename, max_age=0)
+        resp.headers["Cache-Control"] = "no-store, max-age=0"
+        resp.headers["X-TradingBot-Export-Version"] = str(manifest.get("export_schema") or "")
+        return resp
+    except Exception as exc:
+        return jsonify({"ok": False, "error": "export_failed", "detail": str(exc)[:500]}), 500
 
 
 @app.post("/api/test_buy")
