@@ -239,17 +239,34 @@ class SignalJournal:
                     estimated_cost_bps REAL,
                     outcome_5m REAL,
                     outcome_15m REAL,
-                    outcome_60m REAL
+                    outcome_60m REAL,
+                    bot_version TEXT,
+                    event_type TEXT,
+                    exit_reason TEXT,
+                    client_order_id TEXT,
+                    order_id TEXT,
+                    position_qty REAL,
+                    avg_entry REAL,
+                    held_sec REAL,
+                    peak_price REAL,
+                    spread_bps REAL,
+                    quote_age_sec REAL
                     )"""
                 )
                 db.execute("CREATE INDEX IF NOT EXISTS idx_decisions_sym_ts ON decisions(symbol, ts)")
                 cols = {r[1] for r in db.execute("PRAGMA table_info(decisions)")}
-                for col in (
+                real_cols = (
                     "probability_up", "expected_value_bps", "take_profit_pct", "stop_loss_pct",
-                    "estimated_cost_bps", "outcome_5m", "outcome_15m", "outcome_60m"
-                ):
+                    "estimated_cost_bps", "outcome_5m", "outcome_15m", "outcome_60m",
+                    "position_qty", "avg_entry", "held_sec", "peak_price", "spread_bps", "quote_age_sec"
+                )
+                text_cols = ("bot_version", "event_type", "exit_reason", "client_order_id", "order_id")
+                for col in real_cols:
                     if col not in cols:
                         db.execute(f"ALTER TABLE decisions ADD COLUMN {col} REAL")
+                for col in text_cols:
+                    if col not in cols:
+                        db.execute(f"ALTER TABLE decisions ADD COLUMN {col} TEXT")
                 db.commit()
         except Exception:
             self._enabled = False
@@ -262,8 +279,9 @@ class SignalJournal:
                 db.execute(
                     """INSERT INTO decisions(
                     ts,symbol,market,price,technical,mtf,relative,news,regime,global_risk,composite,signal,action,reason,
-                    probability_up,expected_value_bps,take_profit_pct,stop_loss_pct,estimated_cost_bps)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    probability_up,expected_value_bps,take_profit_pct,stop_loss_pct,estimated_cost_bps,
+                    bot_version,event_type,exit_reason,client_order_id,order_id,position_qty,avg_entry,held_sec,peak_price,spread_bps,quote_age_sec)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         row.get("ts") or utc_now().isoformat(), row.get("symbol"), row.get("market"),
                         row.get("price"), row.get("technical"), row.get("mtf"), row.get("relative"),
@@ -271,6 +289,10 @@ class SignalJournal:
                         row.get("signal"), row.get("action"), row.get("reason"),
                         row.get("probability_up"), row.get("expected_value_bps"), row.get("take_profit_pct"),
                         row.get("stop_loss_pct"), row.get("estimated_cost_bps"),
+                        row.get("bot_version"), row.get("event_type"), row.get("exit_reason"),
+                        row.get("client_order_id"), row.get("order_id"), row.get("position_qty"),
+                        row.get("avg_entry"), row.get("held_sec"), row.get("peak_price"),
+                        row.get("spread_bps"), row.get("quote_age_sec"),
                     ),
                 )
                 db.commit()
@@ -1364,6 +1386,17 @@ class IntelligenceEngine:
             "take_profit_pct": intelligence.get("take_profit_pct"),
             "stop_loss_pct": intelligence.get("stop_loss_pct"),
             "estimated_cost_bps": intelligence.get("estimated_cost_bps"),
+            "bot_version": intelligence.get("bot_version"),
+            "event_type": intelligence.get("event_type"),
+            "exit_reason": intelligence.get("exit_reason"),
+            "client_order_id": intelligence.get("client_order_id"),
+            "order_id": intelligence.get("order_id"),
+            "position_qty": intelligence.get("position_qty"),
+            "avg_entry": intelligence.get("avg_entry"),
+            "held_sec": intelligence.get("held_sec"),
+            "peak_price": intelligence.get("peak_price"),
+            "spread_bps": intelligence.get("spread_bps"),
+            "quote_age_sec": intelligence.get("quote_age_sec"),
         })
 
     def summary(self) -> Dict[str, Any]:

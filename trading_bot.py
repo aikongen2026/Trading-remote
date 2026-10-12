@@ -1193,6 +1193,14 @@ def intelligence_from_status(st: Dict[str, Any]) -> Dict[str, Any]:
         "take_profit_pct": dbg.get("active_tp_pct", dbg.get("dynamic_tp_pct")),
         "stop_loss_pct": dbg.get("active_sl_pct", dbg.get("dynamic_sl_pct")),
         "estimated_cost_bps": dbg.get("estimated_rt_cost_bps"),
+        "bot_version": runtime_bot_version(),
+        "event_type": "SNAPSHOT",
+        "position_qty": st.get("pos_qty"),
+        "avg_entry": st.get("avg_entry"),
+        "held_sec": dbg.get("held_sec"),
+        "peak_price": dbg.get("peak_price"),
+        "spread_bps": dbg.get("spread_bps"),
+        "quote_age_sec": dbg.get("quote_age_sec"),
     }
 
 
@@ -2074,6 +2082,13 @@ def main() -> None:
                                 notes.append(f"AUTO EXIT {sym} reason={exit_reason} state={action} pnl={pnl_pct:.4%}")
                                 if intelligence_enabled:
                                     intel_log = intelligence_with_plan(intel, active_plan)
+                                    intel_log.update({
+                                        "bot_version": runtime_bot_version(), "event_type": "EXIT_REQUEST",
+                                        "exit_reason": exit_reason, "position_qty": float(st.get("pos_qty") or 0),
+                                        "avg_entry": avg_entry, "held_sec": held_sec, "peak_price": peak,
+                                        "spread_bps": st.get("debug", {}).get("spread_bps"),
+                                        "quote_age_sec": st.get("debug", {}).get("quote_age_sec"),
+                                    })
                                     intelligence.record_decision(sym, "STOCK", st.get("price"), sig, action, intel_log)
                                 symbols_state[sym] = st
                                 continue
@@ -2210,6 +2225,12 @@ def main() -> None:
                                 )
                                 if intelligence_enabled:
                                     intel_log = intelligence_with_plan(intel, plan_to_save)
+                                    intel_log.update({
+                                        "bot_version": runtime_bot_version(), "event_type": "ENTRY",
+                                        "client_order_id": entry_cid, "position_qty": qty,
+                                        "spread_bps": st.get("debug", {}).get("spread_bps"),
+                                        "quote_age_sec": st.get("debug", {}).get("quote_age_sec"),
+                                    })
                                     intelligence.record_decision(sym, "STOCK", st.get("price"), sig, st["action"], intel_log)
                                 positions_map[sym] = {"symbol": sym, "qty": str(qty), "avg_entry_price": str(st.get("price") or 0)}
                         else:

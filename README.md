@@ -1,3 +1,5 @@
+VERSION: 4.4.2-ai-audit
+
 # TradingBot Research Edge V4.2
 
 Remote Alpaca paper-trading bot med enkelt PC/mobil-dashboard, intelligence/expected-value-lag og ny ordrekoordinator.

@@ -19,6 +19,7 @@ import re
 import time
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 OPEN_STATUSES = {"new", "accepted", "pending_new", "partially_filled", "held", "replaced", "pending_replace"}
@@ -107,8 +108,16 @@ def open_sell_orders(orders: List[Dict[str, Any]], sym: str) -> List[Dict[str, A
 def make_client_order_id(prefix: str, market: str, symbol: str) -> str:
     m = "c" if str(market).upper() == "CRYPTO" else "s"
     clean = re.sub(r"[^A-Z0-9]", "", str(symbol or "").upper())[:10] or "SYM"
-    # Alpaca client_order_id is intentionally kept compact.
-    return f"{prefix}{m}-{clean}-{uuid.uuid4().hex[:16]}"[:48]
+    # Embed a compact bot revision tag in every new order. This survives a
+    # Render restart and lets later analysis attribute fills to the exact
+    # revision even if the local decision journal was reset.
+    try:
+        raw_ver = Path(__file__).with_name("VERSION.txt").read_text(encoding="utf-8", errors="ignore").strip()
+        nums = re.findall(r"\d+", raw_ver)[:3]
+        tag = "v" + "".join(nums) if nums else "v0"
+    except Exception:
+        tag = "v0"
+    return f"{prefix}{m}{tag}-{clean}-{uuid.uuid4().hex[:14]}"[:48]
 
 
 class ExecutionGuard:

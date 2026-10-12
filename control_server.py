@@ -30,7 +30,7 @@ STATE_DIR.mkdir(parents=True, exist_ok=True)
 CONTROL_PATH = STATE_DIR / "control.json"
 STATUS_PATH = STATE_DIR / "status.json"
 VERSION_PATH = HERE / "VERSION.txt"
-BOT_VERSION = VERSION_PATH.read_text(encoding="utf-8", errors="ignore").strip() if VERSION_PATH.exists() else "4.4.1-profit-dropdown"
+BOT_VERSION = VERSION_PATH.read_text(encoding="utf-8", errors="ignore").strip() if VERSION_PATH.exists() else "4.4.2-ai-audit"
 
 app = Flask(__name__, static_folder=str(HERE / "static"), static_url_path="/static")
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
@@ -222,10 +222,10 @@ HTML = r"""
             <div class="profitFoot">Trykk på I dag / 3 dager / 7 dager for å se vinnende avsluttede trades. Hovedtallet er Alpaca portfolio equity og inkluderer åpne posisjoner.</div>
           </div>
           <div class="exportBox">
-            <div class="profitTitle">📦 ANALYSE-DATA</div>
+            <div class="profitTitle">🧠 AI-ANALYSE</div>
             <select id="exportDays" aria-label="Velg analyseperiode"><option value="1">Siste 1 dag</option><option value="3">Siste 3 dager</option><option value="7" selected>Siste 7 dager</option><option value="14">Siste 14 dager</option><option value="30">Siste 30 dager</option></select>
-            <button class="exportBtn" onclick="downloadAnalysis()">⬇ LAST NED ZIP</button>
-            <div class="profitFoot">Ordre, fills, gebyrer, P/L, bot-beslutninger, edge/score og ordresikkerhet. Ingen API-nøkler.</div>
+            <button class="exportBtn" onclick="downloadAnalysis()">⬇ LAST NED ÉN AI-FIL</button>
+            <div class="profitFoot">Én ZIP du laster opp direkte i ChatGPT. Inneholder komplett, sanitert audit: trades, exits, score/EV, P/L, ordre, fills, datahelse og rådata. Ingen API-nøkler.</div>
           </div>
         </div>
       </div><div class="muted" id="st_notes" style="margin-top:10px"></div>
@@ -364,10 +364,10 @@ def api_export():
     if days < 1 or days > 30:
         return jsonify({"ok": False, "error": "days_must_be_1_to_30"}), 400
     try:
-        from trade_export import build_analysis_export
-        blob, manifest = build_analysis_export(days, STATE_DIR, BOT_VERSION)
+        from trade_export import build_ai_analysis_export
+        blob, manifest = build_ai_analysis_export(days, STATE_DIR, BOT_VERSION)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        filename = f"TradingBot_ANALYSE_{days}d_{stamp}UTC.zip"
+        filename = f"TradingBot_AI_ANALYSE_{days}d_{stamp}UTC.zip"
         resp = send_file(io.BytesIO(blob), mimetype="application/zip", as_attachment=True, download_name=filename, max_age=0)
         resp.headers["Cache-Control"] = "no-store, max-age=0"
         resp.headers["X-TradingBot-Export-Version"] = str(manifest.get("export_schema") or "")
