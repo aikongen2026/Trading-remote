@@ -1,3 +1,4 @@
+# V4.4: paid 0.5c-512mb + persistent disk are required for true unattended 24/7 trading.
 services:
   - type: web
     name: tradingbot-remote

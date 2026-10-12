@@ -290,12 +290,17 @@ class ProfitEngine:
             min_rr = 1.35
         else:
             expected_move = clamp(expected_move, 0.0015, 0.025)
-            tp = clamp(expected_move * 0.90, 0.0030, 0.0150)
-            sl = clamp(expected_move * 0.56, 0.0020, 0.0080)
             cost_bps = max(0.0, spread_bps) + max(0.0, stock_slippage_bps)
+            # V4.4: stops must survive ordinary one-minute noise.  The previous
+            # 0.20% floor was hit too often in paper data.  Wider noise-adjusted
+            # stops are paired with risk-based sizing, not larger dollar risk.
+            spread_noise = max(0.0, spread_bps) * 3.0 / 10000.0
+            noise_floor = max(0.0025, sigma1 * 1.40, spread_noise)
+            sl = clamp(max(expected_move * 0.50, noise_floor), 0.0025, 0.0100)
+            tp = clamp(max(expected_move * 0.95, sl * 1.60), 0.0040, 0.0180)
             min_ev_bps = 4.0 if profile == "active" else 7.0
             min_prob = 0.535 if profile == "active" else 0.555
-            min_rr = 1.35
+            min_rr = 1.50
 
         # Make the target comfortably larger than estimated round-trip friction.
         min_tp_from_cost = (cost_bps + min_ev_bps + 8.0) / 10000.0
@@ -319,6 +324,15 @@ class ProfitEngine:
         p_up -= clamp(max(0.0, risk - 65.0) / 1000.0, 0.0, 0.035)
         if crash_risk:
             p_up -= 0.035
+        if market == "STOCK":
+            if risk >= 90:
+                min_ev_bps += 20.0; min_prob += 0.05
+            elif risk >= 80:
+                min_ev_bps += 10.0; min_prob += 0.03
+            elif risk >= 70:
+                min_ev_bps += 5.0; min_prob += 0.015
+            elif risk >= 60:
+                min_ev_bps += 2.0; min_prob += 0.005
         p_up = clamp(p_up, 0.40, 0.78)
 
         ev_bps = p_up * (tp * 10000.0) - (1.0 - p_up) * (sl * 10000.0) - cost_bps
@@ -350,7 +364,18 @@ class ProfitEngine:
             notional = qty * price
 
         # Position size is cut further during forecastable momentum-crash states.
-        vol_scale = 0.55 if crash_risk else (0.75 if risk >= 78 else 1.0)
+        if crash_risk:
+            vol_scale = 0.55
+        elif risk >= 90:
+            vol_scale = 0.0
+        elif risk >= 80:
+            vol_scale = 0.40
+        elif risk >= 70:
+            vol_scale = 0.50
+        elif risk >= 60:
+            vol_scale = 0.75
+        else:
+            vol_scale = 1.0
         if market == "CRYPTO":
             notional *= vol_scale
         else:
@@ -363,6 +388,8 @@ class ProfitEngine:
             allowed = False; reasons.append("intel")
         if bool(intelligence.get("event_blackout")) or bool(intelligence.get("risk_veto")):
             allowed = False; reasons.append("risk_veto")
+        if market == "STOCK" and risk >= 90:
+            allowed = False; reasons.append("extreme_global_risk")
         if p_up < min_prob:
             allowed = False; reasons.append("probability")
         if ev_bps < min_ev_bps:

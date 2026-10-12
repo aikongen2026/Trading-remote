@@ -34,6 +34,17 @@ def symbol_key(sym: str) -> str:
     return str(sym or "").upper().replace("/", "").replace("-", "").strip()
 
 
+def _known_rejection(exc: Exception) -> bool:
+    code = getattr(exc, "status_code", None)
+    text = str(exc)
+    return code == 422 or " 422" in text or "-> 422" in text or "Alpaca API 422" in text
+
+
+def _subpenny_error(text: str) -> bool:
+    t = str(text or "").lower()
+    return "sub-penny" in t or "invalid limit_price" in t
+
+
 def _atomic_write_json(path: str, data: Dict[str, Any]) -> None:
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     tmp = path + ".tmp"
@@ -127,8 +138,9 @@ class ExecutionGuard:
     def block_entry(self, market: str, symbol: str, reason: str = "entry_submitted", client_order_id: str = "") -> None:
         k = self.key(market, symbol)
         cur = self.state["entry_latches"].get(k)
-        if isinstance(cur, dict) and cur.get("blocked") and client_order_id and cur.get("client_order_id") == client_order_id:
-            return
+        if isinstance(cur, dict) and cur.get("blocked"):
+            if not client_order_id or cur.get("client_order_id") == client_order_id:
+                return
         self.state["entry_latches"][k] = {
             "blocked": True,
             "reason": reason,
@@ -276,7 +288,22 @@ class ExecutionGuard:
         if phase in {"submitted", "submitting"}:
             return self._reconcile_submitted(api, orders, row)
         if phase == "reconcile_required":
-            return "EXIT_RECONCILE_REQUIRED"
+            # Upgrade repair: V4.3 could create invalid 4-decimal stock limits and then
+            # leave the position permanently stuck in reconcile_required. Retry once
+            # through the corrected tick-normalization path.
+            if _subpenny_error(str(row.get("last_error") or "")) and not row.get("tick_rounding_repair"):
+                row["tick_rounding_repair"] = True
+                row["attempts"] = 0
+                row["not_found_checks"] = 0
+                row["phase"] = "retry_ready"
+                row["client_order_id"] = ""
+                row["order_id"] = ""
+                self._set_exit(market, symbol, row)
+                phase = "retry_ready"
+            else:
+                return "EXIT_RECONCILE_REQUIRED"
+        if phase == "rejected_known":
+            return "EXIT_REJECTED"
 
         sells = open_sell_orders(orders, symbol)
         # If an existing bot exit is already live, adopt it instead of competing with it.
@@ -348,7 +375,15 @@ class ExecutionGuard:
                 self._set_exit(market, symbol, row)
                 return "EXIT_SUBMITTED"
             except Exception as exc:
-                # Keep phase=submitting. Reconcile by client_order_id next loop.
+                if _known_rejection(exc):
+                    # HTTP 422 is definitive: Alpaca rejected the request, so there is
+                    # no mystery order to reconcile. Let the strategy re-evaluate it.
+                    row["last_error"] = f"submit rejected: {exc}"
+                    row["last_status"] = "rejected"
+                    row["phase"] = "rejected_known"
+                    self._set_exit(market, symbol, row)
+                    return "EXIT_REJECTED"
+                # Network timeout / transport error is unknown: reconcile by client id.
                 row["last_error"] = f"submit unknown: {exc}"
                 self._set_exit(market, symbol, row)
                 return "EXIT_SUBMIT_UNKNOWN"

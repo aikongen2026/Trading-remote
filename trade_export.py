@@ -106,43 +106,45 @@ def _rows_to_csv(rows: Iterable[Dict[str, Any]]) -> str:
 
 
 def _fetch_orders(api: Any, since: datetime, max_records: int = 50000) -> List[Dict[str, Any]]:
-    """Page backwards using before_order_id; stop once the selected window is passed."""
+    """Page orders by timestamp window, independent of undocumented order-id cursors."""
     out: List[Dict[str, Any]] = []
     seen = set()
-    before_id: str | None = None
-    for _ in range(120):
-        params: Dict[str, Any] = {"status": "all", "limit": 500, "direction": "desc", "nested": "true"}
-        if before_id:
-            params["before_order_id"] = before_id
+    cursor_until = _now()
+    for _ in range(240):
+        params: Dict[str, Any] = {
+            "status": "all", "limit": 500, "direction": "desc", "nested": "true",
+            "after": _iso(since), "until": _iso(cursor_until),
+        }
         page = api._req("GET", f"{api.cfg.trading_base}/v2/orders", params=params)
         if not isinstance(page, list) or not page:
             break
-        oldest_dt = None
-        last_id = None
+        oldest = None
+        added = 0
         for row in page:
             if not isinstance(row, dict):
                 continue
-            oid = str(row.get("id") or "")
-            last_id = oid or last_id
             dt = _parse_ts(row.get("submitted_at") or row.get("created_at"))
-            if dt and (oldest_dt is None or dt < oldest_dt):
-                oldest_dt = dt
-            if dt is not None and dt < since:
+            if dt is None or dt < since:
                 continue
+            oid = str(row.get("id") or "")
             if oid and oid in seen:
                 continue
             if oid:
                 seen.add(oid)
-            out.append(row)
+            out.append(row); added += 1
+            if oldest is None or dt < oldest:
+                oldest = dt
             if len(out) >= max_records:
-                return out
-        if len(page) < 500 or (oldest_dt is not None and oldest_dt < since):
+                return sorted(out, key=lambda x: str(x.get("submitted_at") or x.get("created_at") or ""), reverse=True)
+        if len(page) < 500 or oldest is None:
             break
-        next_id = str(page[-1].get("id") or "") if isinstance(page[-1], dict) else ""
-        if not next_id or next_id == before_id:
+        next_until = oldest - timedelta(microseconds=1)
+        if next_until >= cursor_until:
             break
-        before_id = next_id
-    return out
+        cursor_until = next_until
+        if not added and cursor_until <= since:
+            break
+    return sorted(out, key=lambda x: str(x.get("submitted_at") or x.get("created_at") or ""), reverse=True)
 
 
 def _fetch_activities(api: Any, since: datetime, until: datetime, max_records: int = 50000) -> List[Dict[str, Any]]:
@@ -166,6 +168,9 @@ def _fetch_activities(api: Any, since: datetime, until: datetime, max_records: i
                 continue
             if rid:
                 seen.add(rid)
+            dt = _parse_ts(row.get("transaction_time") or row.get("date") or row.get("created_at"))
+            if dt is not None and not (since <= dt <= until):
+                continue
             out.append(row)
             if len(out) >= max_records:
                 return out
@@ -222,6 +227,44 @@ def _learning_rows(state_dir: Path, since: datetime) -> List[Dict[str, Any]]:
     except Exception:
         return []
 
+
+
+def _trade_ledger(fills: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Simple FIFO long-only ledger for fills whose entry and exit are both in-window."""
+    from collections import defaultdict, deque
+    lots = defaultdict(deque)
+    rows: List[Dict[str, Any]] = []
+    ordered = sorted(fills, key=lambda x: str(x.get("transaction_time") or x.get("date") or ""))
+    for f in ordered:
+        sym = str(f.get("symbol") or "").upper()
+        side = str(f.get("side") or "").lower()
+        try:
+            qty = float(f.get("qty") or 0); price = float(f.get("price") or 0)
+        except Exception:
+            continue
+        if not sym or qty <= 0 or price <= 0:
+            continue
+        ts = str(f.get("transaction_time") or f.get("date") or "")
+        if side == "buy":
+            lots[sym].append([qty, price, ts, str(f.get("order_id") or "")])
+        elif side == "sell":
+            remain = qty
+            while remain > 1e-12 and lots[sym]:
+                lot = lots[sym][0]
+                take = min(remain, float(lot[0]))
+                pnl = (price - float(lot[1])) * take
+                entry_dt = _parse_ts(lot[2]); exit_dt = _parse_ts(ts)
+                hold = (exit_dt-entry_dt).total_seconds() if entry_dt and exit_dt else None
+                rows.append({
+                    "symbol": sym, "qty": take, "entry_time": lot[2], "entry_price": lot[1],
+                    "exit_time": ts, "exit_price": price, "hold_sec": hold, "gross_pnl_usd": round(pnl, 6),
+                    "gross_return_pct": round((price/float(lot[1])-1)*100, 6) if lot[1] else None,
+                    "entry_order_id": lot[3], "exit_order_id": str(f.get("order_id") or ""),
+                })
+                lot[0] = float(lot[0]) - take; remain -= take
+                if lot[0] <= 1e-12:
+                    lots[sym].popleft()
+    return rows
 
 def _summary(days: int, orders: List[Dict[str, Any]], activities: List[Dict[str, Any]], decisions: List[Dict[str, Any]], portfolio_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     order_status = Counter(str(x.get("status") or "unknown") for x in orders)
@@ -314,7 +357,10 @@ def build_analysis_export(days: int, state_dir: str | Path, bot_version: str, ap
     fills = [x for x in activities if str(x.get("activity_type") or x.get("type") or "").upper() == "FILL"]
     fee_types = {"FEE", "CFEE", "REGFEE", "TAF", "SEC", "ACATC"}
     fees = [x for x in activities if str(x.get("activity_type") or x.get("type") or "").upper() in fee_types or "fee" in str(x.get("description") or "").lower()]
+    trade_ledger = _trade_ledger(fills)
     summary = _summary(days, orders, activities, decisions, portfolio_rows)
+    summary["matched_round_trip_legs"] = len(trade_ledger)
+    summary["matched_round_trip_gross_pnl_usd"] = round(sum(float(x.get("gross_pnl_usd") or 0) for x in trade_ledger), 6)
 
     manifest = {
         "export_schema": "tradingbot-analysis-v1",
@@ -346,6 +392,7 @@ def build_analysis_export(days: int, state_dir: str | Path, bot_version: str, ap
         "08_portfolio_history.json": _json_bytes(history),
         "08_portfolio_history.csv": _rows_to_csv(portfolio_rows),
         "09_bot_decisions.csv": _rows_to_csv(decisions),
+        "09b_trade_ledger.csv": _rows_to_csv(trade_ledger),
         "10_status_snapshot.json": _json_bytes(status),
         "11_control_snapshot.json": _json_bytes(control),
         "12_execution_state.json": _json_bytes(execution_state),

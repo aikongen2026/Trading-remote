@@ -1347,9 +1347,10 @@ class IntelligenceEngine:
     def update_learning_outcomes(self, symbol: str, price: Any) -> None:
         self.journal.update_outcomes(symbol, safe_float(price, 0.0))
 
-    def record_decision(self, symbol: str, market: str, price: Any, signal: int, action: str, intelligence: Dict[str, Any]) -> None:
-        # Reduce journal spam: only actions/signals worth analysing are stored.
-        if not action or action in {"NONE", "HOLD"} and signal == 0:
+    def record_decision(self, symbol: str, market: str, price: Any, signal: int, action: str, intelligence: Dict[str, Any], force: bool = False) -> None:
+        # Normal trade-event calls remain sparse. V4.4 can force periodic candidate
+        # snapshots so WAIT/blocked states become trainable data too.
+        if not force and (not action or action in {"NONE", "HOLD"} and signal == 0):
             return
         self.journal.log({
             "ts": utc_now().isoformat(), "symbol": symbol, "market": market,
@@ -1370,7 +1371,7 @@ class IntelligenceEngine:
             latest = [asdict(x) for x in list(self.items)[:8]]
             return {
                 "enabled": True,
-                "version": "4.0",
+                "version": "4.4",
                 "regime_score": round(self.regime_score, 1),
                 "regime_label": self.regime_label,
                 "global_risk": round(self.global_risk, 1),
