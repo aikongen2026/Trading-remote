@@ -30,7 +30,7 @@ STATE_DIR.mkdir(parents=True, exist_ok=True)
 CONTROL_PATH = STATE_DIR / "control.json"
 STATUS_PATH = STATE_DIR / "status.json"
 VERSION_PATH = HERE / "VERSION.txt"
-BOT_VERSION = VERSION_PATH.read_text(encoding="utf-8", errors="ignore").strip() if VERSION_PATH.exists() else "4.4.0-profit-stability-24x7"
+BOT_VERSION = VERSION_PATH.read_text(encoding="utf-8", errors="ignore").strip() if VERSION_PATH.exists() else "4.4.1-profit-dropdown"
 
 app = Flask(__name__, static_folder=str(HERE / "static"), static_url_path="/static")
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
@@ -54,6 +54,7 @@ app.config.update(
 )
 
 _LOGIN_ATTEMPTS: Dict[str, list[float]] = {}
+_PROFIT_TRADES_CACHE: Dict[int, tuple[float, Dict[str, Any]]] = {}
 
 
 def utc_now_iso() -> str:
@@ -173,7 +174,7 @@ HTML = r"""
     .heroControls{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-bottom:10px}.heroControls .danger{grid-column:1/-1}.pill{display:inline-block;padding:4px 9px;border-radius:999px;font-weight:800;font-size:12px}.pill.good{background:#073c2d;color:#4bffc0}.pill.bad{background:#461425;color:#ff83a3}.pill.neutral{background:#16284a;color:#bdd0ff}.kv{display:grid;grid-template-columns:145px 1fr;gap:8px 12px;align-items:center}.kv .k{color:#a8b7d2}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.small{font-size:12px}.muted{color:#92a4c3;font-size:12px}.banner{padding:11px 12px;border-radius:11px;margin-bottom:12px;font-weight:800}.banner.bad{background:#471625;border:1px solid #92324e}.banner.good{background:#0e3a2d;border:1px solid #1e7255}.banner.warn{background:#49370e;border:1px solid #85661c}.statusline{display:flex;gap:8px;align-items:center}.dot{width:10px;height:10px;border-radius:50%;background:#71809d}.dot.ok{background:#20d98b;box-shadow:0 0 10px #20d98b}.dot.bad{background:#ff5579}
     input,select{background:#081327;color:#eaf0ff;border:1px solid #29406b;border-radius:10px;padding:11px;font-size:15px;min-height:44px}.tableWrap{overflow:auto;max-width:100%;-webkit-overflow-scrolling:touch}table{width:100%;border-collapse:collapse;font-size:13px;min-width:900px}th,td{padding:9px 8px;border-bottom:1px solid #21345a;text-align:left;white-space:nowrap}th{color:#aebedb;position:sticky;top:0;background:#0f1a33}.pos{color:#6fffc4}.neg{color:#ff7897}.navActions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.sectionSpace{margin-top:14px}.lastId{max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.loginTag{font-size:12px;color:#9eb0ce}
     .installHelp{display:none;background:#10264a;border:1px solid #2f5388;border-radius:12px;padding:10px;margin-top:8px;color:#d6e4ff;font-size:13px}
-    .statusSplit{display:grid;grid-template-columns:minmax(0,1fr) 185px;gap:14px;align-items:start}.sideStack{display:grid;gap:10px}.profitBox,.exportBox{background:#091429;border:1px solid #2a4574;border-radius:13px;padding:11px 12px;box-shadow:inset 0 0 0 1px #ffffff05}.profitTitle{font-weight:900;font-size:14px;margin-bottom:8px;letter-spacing:.02em}.exportBox select{width:100%;min-height:38px;padding:8px;margin-bottom:7px}.exportBtn{width:100%;min-height:40px;padding:9px 10px;background:#12315f;border:1px solid #3765a7;border-radius:9px;color:#fff;font-weight:850;cursor:pointer}.exportBtn:hover{background:#174079}.profitRow{display:grid;grid-template-columns:62px 1fr;gap:8px;align-items:baseline;padding:7px 0;border-bottom:1px solid #20365b}.profitRow:last-of-type{border-bottom:0}.profitLabel{color:#a8b7d2;font-size:12px}.profitValue{font-weight:900;text-align:right;font-size:15px}.profitPct{display:block;font-weight:600;font-size:10px;color:#8fa2c6;margin-top:2px}.profitFoot{font-size:10px;color:#7f92b4;line-height:1.3;margin-top:8px}.profitValue.pos{color:#56f2b2}.profitValue.neg{color:#ff7897}.profitValue.neutral{color:#d8e2f7}
+    .statusSplit{display:grid;grid-template-columns:minmax(0,1fr) 185px;gap:14px;align-items:start}.sideStack{display:grid;gap:10px}.profitBox,.exportBox{background:#091429;border:1px solid #2a4574;border-radius:13px;padding:11px 12px;box-shadow:inset 0 0 0 1px #ffffff05}.profitTitle{font-weight:900;font-size:14px;margin-bottom:8px;letter-spacing:.02em}.exportBox select{width:100%;min-height:38px;padding:8px;margin-bottom:7px}.exportBtn{width:100%;min-height:40px;padding:9px 10px;background:#12315f;border:1px solid #3765a7;border-radius:9px;color:#fff;font-weight:850;cursor:pointer}.exportBtn:hover{background:#174079}.profitRow{display:grid;grid-template-columns:62px 1fr 15px;gap:8px;align-items:baseline;padding:7px 0;border-bottom:1px solid #20365b;cursor:pointer;user-select:none}.profitRow:hover{background:#10203b}.profitLabel{color:#a8b7d2;font-size:12px}.profitValue{font-weight:900;text-align:right;font-size:15px}.profitPct{display:block;font-weight:600;font-size:10px;color:#8fa2c6;margin-top:2px}.profitChev{color:#7f92b4;font-size:11px;transition:transform .18s ease}.profitRow.open .profitChev{transform:rotate(180deg)}.profitDetails{display:none;border-bottom:1px solid #20365b;padding:5px 0 8px}.profitDetails.open{display:block}.profitTrade{padding:7px 3px;border-bottom:1px dashed #1d3154}.profitTrade:last-child{border-bottom:0}.profitTradeTop{display:flex;justify-content:space-between;gap:8px;font-size:11px}.profitTradeSym{font-weight:850;color:#e9f0ff}.profitTradePnl{font-weight:900;color:#56f2b2}.profitTradeMeta{font-size:9.5px;color:#8295b8;margin-top:2px;line-height:1.25}.profitTradeSummary{font-size:10px;color:#9fb2d2;background:#0d1b34;border-radius:7px;padding:6px 7px;margin:3px 0 5px}.profitLoading,.profitEmpty{font-size:10px;color:#91a4c8;padding:7px 3px}.profitFoot{font-size:10px;color:#7f92b4;line-height:1.3;margin-top:8px}.profitValue.pos{color:#56f2b2}.profitValue.neg{color:#ff7897}.profitValue.neutral{color:#d8e2f7}
     @media(max-width:980px){.statusSplit{grid-template-columns:1fr}.profitBox,.exportBox{max-width:none}.sideStack{grid-template-columns:1fr 1fr}}
     @media(max-width:760px){.sideStack{grid-template-columns:1fr}.wrap{padding:8px 8px 28px}.grid{grid-template-columns:1fr}.topbar{padding-top:max(7px,env(safe-area-inset-top))}h1{font-size:21px}.card{padding:12px;border-radius:14px}.heroControls{grid-template-columns:1fr 1fr}.btn{padding:12px 13px;flex:1}.row .btn{min-width:calc(50% - 6px)}.kv{grid-template-columns:120px 1fr;font-size:14px}.navActions .btn{min-width:auto;flex:0 0 auto}.lastId{display:none}.desktopOnly{display:none}.tableWrap{margin:0 -4px}table{font-size:12px}.symbolsTable{min-width:1050px}}
   </style>
@@ -212,10 +213,13 @@ HTML = r"""
         <div class="sideStack">
           <div class="profitBox">
             <div class="profitTitle">💰 RESULTAT</div>
-            <div class="profitRow"><div class="profitLabel">I dag</div><div id="profit_today" class="profitValue neutral">-</div></div>
-            <div class="profitRow"><div class="profitLabel">3 dager</div><div id="profit_3d" class="profitValue neutral">-</div></div>
-            <div class="profitRow"><div class="profitLabel">7 dager</div><div id="profit_7d" class="profitValue neutral">-</div></div>
-            <div class="profitFoot">Alpaca portfolio equity: inkluderer åpne posisjoner og meglerens egne kontobevegelser. Oppdateres automatisk.</div>
+            <div id="profit_row_1" class="profitRow" onclick="toggleProfitTrades(1)"><div class="profitLabel">I dag</div><div id="profit_today" class="profitValue neutral">-</div><div class="profitChev">▼</div></div>
+            <div id="profit_details_1" class="profitDetails"></div>
+            <div id="profit_row_3" class="profitRow" onclick="toggleProfitTrades(3)"><div class="profitLabel">3 dager</div><div id="profit_3d" class="profitValue neutral">-</div><div class="profitChev">▼</div></div>
+            <div id="profit_details_3" class="profitDetails"></div>
+            <div id="profit_row_7" class="profitRow" onclick="toggleProfitTrades(7)"><div class="profitLabel">7 dager</div><div id="profit_7d" class="profitValue neutral">-</div><div class="profitChev">▼</div></div>
+            <div id="profit_details_7" class="profitDetails"></div>
+            <div class="profitFoot">Trykk på I dag / 3 dager / 7 dager for å se vinnende avsluttede trades. Hovedtallet er Alpaca portfolio equity og inkluderer åpne posisjoner.</div>
           </div>
           <div class="exportBox">
             <div class="profitTitle">📦 ANALYSE-DATA</div>
@@ -240,6 +244,10 @@ function pill(v){let c='neutral';if(v===true||String(v)==='true')c='good';if(v==
 function fmt(x){if(x===null||x===undefined||x==='')return '-';const n=Number(x);if(Number.isNaN(n))return String(x);const a=Math.abs(n);return a>=100?n.toFixed(2):a>=1?n.toFixed(4):n.toFixed(6)}
 function money(x){if(x===null||x===undefined||x==='')return '-';const n=Number(x);if(Number.isNaN(n))return '-';return `${n>0?'+':n<0?'-':''}$${Math.abs(n).toFixed(2)}`}
 function renderProfit(p){[['profit_today','today_usd','today_pct'],['profit_3d','days3_usd','days3_pct'],['profit_7d','days7_usd','days7_pct']].forEach(([id,k,pk])=>{const el=document.getElementById(id),v=p?.[k],pct=p?.[pk];if(v===null||v===undefined){el.textContent='-';el.className='profitValue neutral';return;}const n=Number(v);el.className='profitValue '+(n>0?'pos':n<0?'neg':'neutral');el.innerHTML=`${money(n)}${pct!==null&&pct!==undefined?`<span class="profitPct">${Number(pct)>=0?'+':''}${Number(pct).toFixed(2)}%</span>`:''}`})}
+const profitTradeLoaded={1:false,3:false,7:false};
+function holdText(sec){const n=Math.max(0,Number(sec||0));if(n<60)return Math.round(n)+'s';if(n<3600)return Math.round(n/60)+'m';return (n/3600).toFixed(1)+'t'}
+function safeHtml(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+async function toggleProfitTrades(days){const row=document.getElementById('profit_row_'+days),box=document.getElementById('profit_details_'+days);const opening=!box.classList.contains('open');box.classList.toggle('open',opening);row.classList.toggle('open',opening);if(!opening||profitTradeLoaded[days])return;box.innerHTML='<div class="profitLoading">Henter faktiske vinnende trades…</div>';try{const r=await apiFetch('/api/profit_trades?days='+days+'&ts='+Date.now());const d=await r.json();if(!r.ok||d.ok===false)throw new Error(d.detail||d.error||'ukjent feil');const trades=d.trades||[];profitTradeLoaded[days]=true;let h=`<div class="profitTradeSummary">${Number(d.winner_count||0)} vinnende trade${Number(d.winner_count||0)===1?'':'s'} • realisert brutto ${money(d.gross_profit_usd||0)}${Number(d.shown||0)<Number(d.winner_count||0)?' • viser '+Number(d.shown||0):''}</div>`;if(!trades.length){h+='<div class="profitEmpty">Ingen avsluttede vinnende trades funnet i perioden.</div>'}else{h+=trades.map(t=>`<div class="profitTrade"><div class="profitTradeTop"><span class="profitTradeSym">${safeHtml(t.symbol)}</span><span class="profitTradePnl">${money(t.gross_pnl_usd)} (${Number(t.gross_return_pct||0)>=0?'+':''}${Number(t.gross_return_pct||0).toFixed(2)}%)</span></div><div class="profitTradeMeta">${fmt(t.entry_price)} → ${fmt(t.exit_price)} • ${safeHtml(t.qty)} stk • holdt ${holdText(t.hold_sec)}<br>${safeHtml(String(t.exit_time||'').replace('T',' ').replace('Z',' UTC'))}</div></div>`).join('')}h+='<div class="profitTradeMeta" style="padding:6px 3px 0">Brutto P/L fra faktiske Alpaca fills. Gebyrer er ikke fordelt på enkelt-trades.</div>';box.innerHTML=h}catch(e){box.innerHTML='<div class="profitEmpty neg">Kunne ikke hente trade-detaljer: '+safeHtml(e.message||e)+'</div>'}}
 async function apiFetch(url,opt={}){const r=await fetch(url,{cache:'no-store',...opt});if(r.status===401){location.href='/login';throw new Error('login_required')}return r}
 async function postControl(url,payload){await apiFetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});await refresh(true)}
 async function startTrading(){await postControl('/api/control',{armed:true,paused:false,kill:false})}
@@ -321,6 +329,30 @@ def api_status():
     if isinstance(st, dict): defaults.update(st)
     defaults["version"] = BOT_VERSION
     return jsonify(defaults)
+
+
+@app.get("/api/profit_trades")
+def api_profit_trades():
+    try:
+        days = int(request.args.get("days", "1"))
+    except Exception:
+        days = 1
+    if days not in {1, 3, 7}:
+        return jsonify({"ok": False, "error": "days_must_be_1_3_or_7"}), 400
+    now = time.time()
+    cached = _PROFIT_TRADES_CACHE.get(days)
+    if cached and now - cached[0] < 60:
+        return jsonify({"ok": True, **cached[1], "cached": True})
+    try:
+        import trading_bot
+        from trade_export import realized_winning_trades
+        cfg = trading_bot.load_cfg()
+        api = trading_bot.AlpacaRest(cfg)
+        data = realized_winning_trades(api, days, max_items=50)
+        _PROFIT_TRADES_CACHE[days] = (now, data)
+        return jsonify({"ok": True, **data, "cached": False})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": "profit_trades_failed", "detail": str(exc)[:500]}), 500
 
 
 @app.get("/api/export")

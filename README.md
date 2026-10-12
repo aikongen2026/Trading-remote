@@ -21,3 +21,6 @@ V4.2 beholder V4/V4.1-funksjonene og legger særlig til:
 ## Viktig
 
 PAPER bør brukes til nok data viser positiv forventning etter spread, slippage og gebyrer. Ingen strategi garanterer gevinst.
+
+## V4.4.1 profit dropdown
+Klikk på I dag / 3 dager / 7 dager i RESULTAT-panelet for å se faktiske vinnende avsluttede trades fra Alpaca fills. Listen viser symbol, brutto realisert P/L, avkastning, entry/exit, mengde og holdetid. Hovedtallet i RESULTAT er fortsatt portfolio equity og kan inkludere åpne posisjoner.

@@ -266,6 +266,46 @@ def _trade_ledger(fills: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                     lots[sym].popleft()
     return rows
 
+def realized_winning_trades(api: Any, days: int, max_items: int = 50) -> Dict[str, Any]:
+    """Return actual profitable FIFO round-trip legs closed in the selected window.
+
+    We fetch a wider history than the selected window so a position opened before
+    the window but closed inside it can still be matched.  Values are gross P/L
+    from actual Alpaca FILL prices; account/crypto fees are intentionally not
+    guessed or allocated to individual trades.
+    """
+    days = max(1, min(7, int(days)))
+    now = _now()
+    window_start = now - timedelta(days=days)
+    # Bot trades are short-lived, but 30d gives enough context for positions that
+    # were opened before the selected 1/3/7-day result window.
+    history_start = now - timedelta(days=30)
+    activities = _fetch_activities(api, history_start, now)
+    fills = [x for x in activities if str(x.get("activity_type") or x.get("type") or "").upper() == "FILL"]
+    ledger = _trade_ledger(fills)
+    closed: List[Dict[str, Any]] = []
+    for row in ledger:
+        exit_dt = _parse_ts(row.get("exit_time"))
+        if not exit_dt or exit_dt < window_start or exit_dt > now:
+            continue
+        pnl = float(row.get("gross_pnl_usd") or 0.0)
+        if pnl <= 0:
+            continue
+        out = dict(row)
+        out["gross_pnl_usd"] = round(pnl, 6)
+        closed.append(out)
+    closed.sort(key=lambda x: str(x.get("exit_time") or ""), reverse=True)
+    return {
+        "days": days,
+        "generated_at": _iso(now),
+        "winner_count": len(closed),
+        "gross_profit_usd": round(sum(float(x.get("gross_pnl_usd") or 0) for x in closed), 6),
+        "trades": closed[:max(1, min(200, int(max_items)))],
+        "shown": min(len(closed), max(1, min(200, int(max_items)))),
+        "note": "Realisert brutto P/L fra faktiske Alpaca fills. Gebyrer er ikke fordelt per trade, og portfolio-resultatet over inkluderer ogsaa aapne posisjoner.",
+    }
+
+
 def _summary(days: int, orders: List[Dict[str, Any]], activities: List[Dict[str, Any]], decisions: List[Dict[str, Any]], portfolio_rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     order_status = Counter(str(x.get("status") or "unknown") for x in orders)
     activity_types = Counter(str(x.get("activity_type") or x.get("type") or "unknown") for x in activities)
