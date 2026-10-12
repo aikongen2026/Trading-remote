@@ -659,6 +659,26 @@ def _fetch_trade_bars(api: Any, trades: List[Dict[str, Any]], manifest: Dict[str
             errors.append(f"crypto_bars:{','.join(chunk)}:{type(exc).__name__}")
     return out, errors
 
+def _shadow_rows(state_dir: str | Path, start_utc: Any, end_utc: Any) -> List[Dict[str, Any]]:
+    path = Path(state_dir) / "learning_v3.sqlite"
+    if not path.exists():
+        return []
+    start = str(start_utc or "")
+    end = str(end_utc or "")
+    try:
+        import sqlite3
+        with sqlite3.connect(path, timeout=3) as db:
+            cols = [x[1] for x in db.execute("PRAGMA table_info(shadow_signals)").fetchall()]
+            if not cols:
+                return []
+            rows = db.execute(
+                "SELECT * FROM shadow_signals WHERE ts>=? AND ts<=? ORDER BY id", (start, end)
+            ).fetchall()
+        return [dict(zip(cols, r)) for r in rows]
+    except Exception:
+        return []
+
+
 def build_ai_analysis_export(days: int, state_dir: str | Path, bot_version: str, api: Any | None = None) -> Tuple[bytes, Dict[str, Any]]:
     """Build ONE uploadable ZIP containing ONE comprehensive AI_ANALYSE.json.
 
@@ -737,9 +757,22 @@ def build_ai_analysis_export(days: int, state_dir: str | Path, bot_version: str,
         row["market_path"] = _trade_path_stats(row, trade_bars.get(str(row.get("symbol") or "").upper(), []))
     diagnostics = _trade_diagnostics(enriched, positions if isinstance(positions,list) else [], portfolio_rows, decisions, status, manifest)
     diagnostics["market_path_errors"] = bar_errors
+    shadow_rows = _shadow_rows(state_dir, manifest.get("range_start_utc"), manifest.get("range_end_utc"))
+    shadow_summary: Dict[str, Any] = {}
+    for model in sorted({str(r.get("model") or "") for r in shadow_rows if r.get("model")}):
+        vals = [_num(r.get("outcome_15m")) for r in shadow_rows if str(r.get("model") or "") == model and r.get("outcome_15m") is not None]
+        if vals:
+            shadow_summary[model] = {
+                "samples": len(vals),
+                "win_rate_pct": round(sum(1 for x in vals if x > 0) / len(vals) * 100.0, 2),
+                "avg_return_bps": round(sum(vals) / len(vals) * 10000.0, 3),
+            }
+        else:
+            shadow_summary[model] = {"samples": 0, "win_rate_pct": None, "avg_return_bps": None}
+    diagnostics["champion_challenger"] = shadow_summary
     coverage_warning = diagnostics.get("decision_journal", {}).get("warning")
     payload = {
-        "format": "TradingBot-AI-Audit-v2",
+        "format": "TradingBot-AI-Audit-v3",
         "meta": manifest,
         "executive_summary": summary,
         "diagnostics": diagnostics,
@@ -760,13 +793,14 @@ def build_ai_analysis_export(days: int, state_dir: str | Path, bot_version: str,
         "activities_raw": activities,
         "fees_raw": fees,
         "bot_decisions_raw": decisions,
+        "shadow_challenger_raw": shadow_rows,
         "status_snapshot": status,
         "control_snapshot": control,
         "execution_state": execution,
         "trade_plans": plans,
     }
     ai_manifest = dict(manifest)
-    ai_manifest["export_schema"] = "tradingbot-ai-audit-v2"
+    ai_manifest["export_schema"] = "tradingbot-ai-audit-v3"
     ai_manifest["single_upload_file"] = True
     ai_manifest["inside_zip"] = ["AI_ANALYSE.json"]
     payload["meta"] = ai_manifest

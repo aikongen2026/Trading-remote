@@ -396,7 +396,12 @@ class IntelligenceEngine:
             "BAC","WFC","GS","V","MA","COST","WMT","XOM","CVX","XLE"
         ]
         stock_set = {str(x).upper() for x in self.stock_symbols}
-        self.stock_stream_symbols = [x for x in preferred if x in stock_set][:30]
+        # Algo Trader Plus/SIP permits an unlimited stock WebSocket universe;
+        # Basic/IEX is limited to 30 symbols. REST still covers the full universe.
+        if str(getattr(self.cfg, "stock_feed", "iex") or "iex").lower() == "sip":
+            self.stock_stream_symbols = [x for x in self.stock_symbols if x in stock_set]
+        else:
+            self.stock_stream_symbols = [x for x in preferred if x in stock_set][:30]
         self.live_quotes: Dict[str, Dict[str, Any]] = {}
         self.live_bars: Dict[str, Dict[str, Any]] = {}
         self.quote_history: Dict[str, Deque[Dict[str, Any]]] = defaultdict(lambda: deque(maxlen=30))
@@ -775,7 +780,7 @@ class IntelligenceEngine:
                         break
                 ws.send(json.dumps({"action":"subscribe","quotes":self.stock_stream_symbols,"bars":self.stock_stream_symbols}))
                 ws.settimeout(30)
-                self.source_health["stock_stream"] = f"CONNECTED:{len(self.stock_stream_symbols)}"
+                self.source_health["stock_stream"] = f"CONNECTED:{len(self.stock_stream_symbols)}:{feed.upper()}"
                 while not self._stop.is_set():
                     try:
                         raw = ws.recv()
@@ -862,17 +867,40 @@ class IntelligenceEngine:
 
         recent_imbalances: List[float] = []
         mids: List[float] = []
-        for h in hist[-20:]:
+        clean: List[Tuple[float,float,float,float]] = []
+        for h in hist[-24:]:
             hb, ha = safe_float(h.get("bid")), safe_float(h.get("ask"))
             hbs, has = safe_float(h.get("bid_size")), safe_float(h.get("ask_size"))
             if hb > 0 and ha >= hb:
                 mids.append((hb + ha) / 2.0)
+                clean.append((hb, ha, max(0.0,hbs), max(0.0,has)))
             if hbs + has > 0:
                 recent_imbalances.append((hbs - has) / max(hbs + has, 1e-12))
         avg_imb = sum(recent_imbalances) / len(recent_imbalances) if recent_imbalances else imbalance
         quote_mom = pct(mids[0], mids[-1]) if len(mids) >= 4 else 0.0
 
-        score = clamp(imbalance * 3.0 + avg_imb * 3.0, -5.0, 5.0)
+        # Cont/Kukanov/Stoikov-style top-of-book order-flow imbalance.
+        # Normalize by displayed depth so the measure is comparable across tickers.
+        ofi_vals: List[float] = []
+        depth_vals: List[float] = []
+        for prev, cur in zip(clean[:-1], clean[1:]):
+            pb, pa, pbs, pas = prev
+            cb, ca, cbs, cas = cur
+            e = (cbs if cb >= pb else 0.0) - (pbs if cb <= pb else 0.0) \
+                - (cas if ca <= pa else 0.0) + (pas if ca >= pa else 0.0)
+            depth = max(1.0, 0.5 * (pbs + pas + cbs + cas))
+            ofi_vals.append(e / depth)
+            depth_vals.append(depth)
+        ofi = sum(ofi_vals[-12:]) / max(1, len(ofi_vals[-12:])) if ofi_vals else 0.0
+        ofi_accel = 0.0
+        if len(ofi_vals) >= 6:
+            old = sum(ofi_vals[-6:-3]) / 3.0
+            newv = sum(ofi_vals[-3:]) / 3.0
+            ofi_accel = newv - old
+
+        score = clamp(imbalance * 2.0 + avg_imb * 2.0, -4.0, 4.0)
+        score += clamp(ofi * 5.0, -4.0, 4.0)
+        score += clamp(ofi_accel * 3.0, -2.0, 2.0)
         score += clamp(quote_mom * 1600.0, -2.5, 2.5)
         close = safe_float(b.get("close"))
         opn = safe_float(b.get("open"))
@@ -881,9 +909,10 @@ class IntelligenceEngine:
         max_spread = 12.0 if market.upper() == "STOCK" else 30.0
         if spread_bps > max_spread:
             score -= clamp((spread_bps - max_spread) / 8.0, 0.0, 5.0)
-        return clamp(score, -8.0, 8.0), {
+        return clamp(score, -10.0, 10.0), {
             "live": True, "age_sec": round(age, 2), "spread_bps": round(spread_bps, 2),
             "imbalance": round(imbalance, 3), "avg_imbalance": round(avg_imb, 3),
+            "ofi": round(ofi, 4), "ofi_accel": round(ofi_accel, 4),
             "quote_momentum": round(quote_mom, 6), "quote_samples": len(hist),
         }
 
@@ -1404,7 +1433,7 @@ class IntelligenceEngine:
             latest = [asdict(x) for x in list(self.items)[:8]]
             return {
                 "enabled": True,
-                "version": "4.4",
+                "version": "4.5-adaptive-edge",
                 "regime_score": round(self.regime_score, 1),
                 "regime_label": self.regime_label,
                 "global_risk": round(self.global_risk, 1),

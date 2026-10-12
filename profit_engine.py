@@ -157,7 +157,7 @@ class OutcomeCalibrator:
         try:
             with sqlite3.connect(self.db_path, timeout=2) as db:
                 return db.execute(
-                    f"""SELECT ts,symbol,composite,{outcome_col},action
+                    f"""SELECT ts,symbol,composite,probability_up,{outcome_col},action
                         FROM decisions
                         WHERE market=? AND {outcome_col} IS NOT NULL
                           AND signal>0 AND action LIKE 'BUY%'
@@ -193,12 +193,16 @@ class OutcomeCalibrator:
         weighted_ret = 0.0
         weighted_abs = 0.0
         same_symbol_weight = 0.0
-        for ts, rsym, comp, outcome, _action in rows:
+        for ts, rsym, comp, stored_prob, outcome, _action in rows:
             c = safe_float(comp, 50.0)
             r = safe_float(outcome, 0.0)
-            # Similar score states get more weight; the exact same symbol gets a
-            # modest boost without overfitting to one ticker.
-            sim = math.exp(-abs(c - score) / 12.0)
+            sp = safe_float(stored_prob, 0.0)
+            # Similar score *and probability* states get more weight. This lets
+            # the bot empirically learn whether e.g. a stated 60% setup really
+            # behaves like one, rather than treating score as probability.
+            sim = math.exp(-abs(c - score) / 14.0)
+            if sp > 0:
+                sim *= math.exp(-abs(sp - p0) / 0.09)
             if normalize_symbol(rsym) == symbol:
                 sim *= 1.35
                 same_symbol_weight += sim
@@ -243,7 +247,42 @@ class OutcomeCalibrator:
 class ProfitEngine:
     def __init__(self, state_dir: str) -> None:
         # Reuse the V3 journal so an upgrade preserves existing learning history.
-        self.calibrator = OutcomeCalibrator(os.path.join(state_dir, "learning_v3.sqlite"))
+        self.db_path = os.path.join(state_dir, "learning_v3.sqlite")
+        self.calibrator = OutcomeCalibrator(self.db_path)
+
+    def calibration_summary(self, market: str = "STOCK") -> Dict[str, Any]:
+        """Reliability snapshot for the probability model using 15m outcomes."""
+        out: Dict[str, Any] = {"samples": 0, "brier": None, "buckets": []}
+        if not os.path.exists(self.db_path):
+            return out
+        try:
+            with sqlite3.connect(self.db_path, timeout=2) as db:
+                rows = db.execute(
+                    """SELECT probability_up,outcome_15m FROM decisions
+                       WHERE market=? AND probability_up IS NOT NULL AND outcome_15m IS NOT NULL
+                         AND signal>0 AND action LIKE 'BUY%'
+                       ORDER BY id DESC LIMIT 3000""",
+                    (str(market).upper(),),
+                ).fetchall()
+            vals = [(clamp(safe_float(p),0.0,1.0), 1.0 if safe_float(r)>0 else 0.0) for p,r in rows if safe_float(p)>0]
+            out["samples"] = len(vals)
+            if not vals:
+                return out
+            out["brier"] = round(sum((p-y)**2 for p,y in vals)/len(vals), 4)
+            edges = [(0.50,0.55),(0.55,0.60),(0.60,0.65),(0.65,0.70),(0.70,0.80)]
+            buckets=[]
+            for lo,hi in edges:
+                arr=[(p,y) for p,y in vals if lo <= p < hi]
+                if arr:
+                    buckets.append({
+                        "range": f"{int(lo*100)}-{int(hi*100)}", "n": len(arr),
+                        "predicted_pct": round(sum(p for p,_ in arr)/len(arr)*100,1),
+                        "actual_win_pct": round(sum(y for _,y in arr)/len(arr)*100,1),
+                    })
+            out["buckets"] = buckets
+        except Exception as exc:
+            out["error"] = type(exc).__name__
+        return out
 
     def plan(
         self,

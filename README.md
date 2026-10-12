@@ -1,4 +1,4 @@
-VERSION: 4.4.2-ai-audit
+VERSION: 4.5.0-adaptive-edge
 
 # TradingBot Research Edge V4.2
 

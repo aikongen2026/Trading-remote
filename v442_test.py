@@ -12,8 +12,8 @@ def check(cond, msg):
     print('OK:', msg)
 
 cid=make_client_order_id('tbe-','STOCK','AAPL')
-check(cid.startswith('tbe-sv442-'), 'new client order ids include revision tag')
-check(trade_export._client_version_tag(cid)=='v442', 'revision tag can be recovered from client order id')
+check(cid.startswith('tbe-sv450-'), 'new client order ids include revision tag')
+check(trade_export._client_version_tag(cid)=='v450', 'revision tag can be recovered from client order id')
 
 legacy_files={
  '00_manifest.json': {'export_schema':'tradingbot-analysis-v1','bot_version':'4.4.2-ai-audit','range_start_utc':'2026-10-12T10:00:00Z','range_end_utc':'2026-10-12T11:00:00Z','days':1,'paper':True,'errors':[]},
@@ -55,8 +55,8 @@ finally:
 with zipfile.ZipFile(io.BytesIO(blob)) as z:
     check(z.namelist()==['AI_ANALYSE.json'],'AI export contains one uploadable analysis file')
     p=json.loads(z.read('AI_ANALYSE.json'))
-check(p['format']=='TradingBot-AI-Audit-v2','AI payload schema present')
+check(p['format']=='TradingBot-AI-Audit-v3','AI payload schema present')
 check(p['diagnostics']['all_matched_trades']['gross_pnl_usd']==1.0,'AI diagnostics calculate matched trade P/L')
-check(p['completed_trades'][0]['entry_version_tag']=='v442','AI trade ledger carries version attribution')
+check(p['completed_trades'][0]['entry_version_tag']=='v442','AI trade ledger preserves historical version attribution')
 check('orders_raw' in p and 'bot_decisions_raw' in p and 'source_health' in p['diagnostics'],'AI file contains raw evidence plus diagnostics')
-print('V4.4.2 TEST PASSED')
+print('AI AUDIT COMPAT TEST PASSED')

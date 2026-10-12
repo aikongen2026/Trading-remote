@@ -35,6 +35,7 @@ import requests
 from intelligence_engine import IntelligenceEngine, group_for_symbol
 from profit_engine import ProfitEngine
 from execution_guard import ExecutionGuard
+from adaptive_edge import AdaptiveRouter, ShadowLab, dynamic_universe, sector_confirmation
 
 try:
     import tkinter as tk
@@ -67,7 +68,7 @@ def acquire_single_instance_socket() -> socket.socket:
 
 
 DEFAULT_CONTROL: Dict[str, Any] = {
-    "config_version": 6,
+    "config_version": 7,
     "paused": True,
     "kill": False,
     "armed": False,
@@ -155,6 +156,13 @@ DEFAULT_CONTROL: Dict[str, Any] = {
     "stock_loss_streak_count": 2,
     "stock_loss_streak_cooldown_sec": 1800,
     "decision_log_interval_sec": 60,
+    # V4.5 adaptive edge: all enabled by default, but challengers are shadow-only.
+    "adaptive_router_enabled": True,
+    "dynamic_universe_enabled": True,
+    "dynamic_universe_top_n": 18,
+    "sector_confirmation_enabled": True,
+    "champion_challenger_enabled": True,
+    "shadow_log_interval_sec": 60,
     "test_buy": {"symbol": "AAPL", "qty": 1, "go": False},
     "test_sell_all": {"symbol": "AAPL", "go": False},
 }
@@ -203,7 +211,8 @@ def ensure_control_file() -> Dict[str, Any]:
             control["soft_exit_confirm_sec"] = 20
             changed = True
         for _k in ("stock_entry_cutoff_min", "stock_flatten_before_close_min", "stock_loss_streak_window_sec",
-                   "stock_loss_streak_count", "stock_loss_streak_cooldown_sec", "decision_log_interval_sec"):
+                   "stock_loss_streak_count", "stock_loss_streak_cooldown_sec", "decision_log_interval_sec",
+                   "dynamic_universe_top_n", "shadow_log_interval_sec"):
             if _k not in control:
                 control[_k] = DEFAULT_CONTROL[_k]
                 changed = True
@@ -454,7 +463,11 @@ def load_cfg() -> BotCfg:
     if not data_base:
         data_base = "https://data.alpaca.markets"
 
-    stock_feed = (_env_value("ALPACA_DATA_FEED", default="iex") or "iex").strip().lower()
+    stock_feed = (_env_value("ALPACA_DATA_FEED", default="auto") or "auto").strip().lower()
+    # V4.5 defaults to best-available feed even if an older Render install still
+    # carries ALPACA_DATA_FEED=iex. Set ALPACA_DATA_FEED_AUTO=false to lock it.
+    if to_bool_env(_env_value("ALPACA_DATA_FEED_AUTO", default="true"), True) and stock_feed in {"iex", "auto", "best", ""}:
+        stock_feed = "auto"
 
     return BotCfg(
         key=key,
@@ -541,6 +554,25 @@ class AlpacaRest:
 
     def account(self) -> Dict[str, Any]:
         return self._req("GET", f"{self.cfg.trading_base}/v2/account")
+
+    def resolve_stock_feed(self) -> str:
+        """Use SIP automatically when the account is entitled, else IEX.
+
+        Alpaca returns a subscription error when recent SIP data is unavailable.
+        Explicit ALPACA_DATA_FEED values still win over automatic detection.
+        """
+        requested = str(getattr(self.cfg, "stock_feed", "auto") or "auto").lower().strip()
+        if requested in {"iex", "sip", "delayed_sip"}:
+            return requested
+        try:
+            self.quotes_latest(["SPY"], "sip")
+            return "sip"
+        except AlpacaApiError as exc:
+            if int(getattr(exc, "status_code", 0) or 0) not in {401, 403, 422}:
+                pass
+        except Exception:
+            pass
+        return "iex"
 
     def portfolio_history(
         self, period: str = "7D", timeframe: str = "1H", *, continuous: bool = True
@@ -936,6 +968,31 @@ def scalp_signal(
     if f < sl and short_votes >= 3:
         return -1, debug
     return 0, debug
+
+
+def mean_reversion_signal(closes: List[float], live_price: Optional[float], lookback: int = 30) -> Tuple[int, Dict[str, Any]]:
+    """Neutral-regime mean-reversion setup with reversal confirmation.
+
+    Long-only entry waits for an oversold deviation *and* a positive turn; the
+    negative signal is used only as an exit bias for an existing long.
+    """
+    dbg: Dict[str, Any] = {}
+    vals = [float(x) for x in closes[-max(12, lookback):] if x and float(x) > 0]
+    if len(vals) < 12:
+        return 0, dbg
+    mean = sum(vals) / len(vals)
+    var = sum((x-mean)**2 for x in vals) / max(1, len(vals)-1)
+    sd = math.sqrt(max(0.0, var))
+    px = float(live_price or vals[-1])
+    z = (px-mean)/sd if sd > 1e-12 else 0.0
+    last = pct_change(vals[-2], vals[-1]) if len(vals) >= 2 else 0.0
+    prev = pct_change(vals[-3], vals[-2]) if len(vals) >= 3 else 0.0
+    dbg.update({"meanrev_z": round(z,3), "meanrev_mean": round(mean,6), "meanrev_sd": round(sd,6), "meanrev_last": round(last,6)})
+    if z <= -1.10 and last > 0 and (prev <= 0 or last > prev):
+        return 1, dbg
+    if z >= 0.85 and last < 0:
+        return -1, dbg
+    return 0, dbg
 
 
 def crypto_estimated_roundtrip_cost_bps(spread_bps: float, taker_fee_bps: float) -> float:
@@ -1344,6 +1401,11 @@ def main() -> None:
     instance_socket = acquire_single_instance_socket()
     cfg = load_cfg()
     api = AlpacaRest(cfg)
+    try:
+        cfg.stock_feed = api.resolve_stock_feed()
+    except Exception:
+        if str(cfg.stock_feed).lower() in {"auto", "best", ""}:
+            cfg.stock_feed = "iex"
 
     print(f"{utc_now_iso()} | INFO | Starter bot. PAPER={cfg.paper} TRADING_URL={cfg.trading_base} FEED={cfg.stock_feed}")
     print(f"{utc_now_iso()} | INFO | HERE={HERE}")
@@ -1423,6 +1485,8 @@ def main() -> None:
         api, cfg, STATE_DIR, symbol_universe(initial_control), crypto_universe(initial_control)
     )
     profit_engine = ProfitEngine(STATE_DIR)
+    adaptive_router = AdaptiveRouter(intelligence)
+    shadow_lab = ShadowLab(STATE_DIR)
     trade_plans = load_trade_plans()
     execution_guard = ExecutionGuard(STATE_DIR)
     soft_exit_since: Dict[str, Tuple[str, float]] = {}
@@ -1526,6 +1590,12 @@ def main() -> None:
             stock_entry_cutoff_min = max(0, int(control.get("stock_entry_cutoff_min", 15) or 0))
             stock_flatten_before_close_min = max(0, int(control.get("stock_flatten_before_close_min", 5) or 0))
             decision_log_interval_sec = max(15, int(control.get("decision_log_interval_sec", 60) or 60))
+            adaptive_router_enabled = bool(control.get("adaptive_router_enabled", True))
+            dynamic_universe_enabled = bool(control.get("dynamic_universe_enabled", True))
+            dynamic_universe_top_n = max(5, int(control.get("dynamic_universe_top_n", 18) or 18))
+            sector_confirmation_enabled = bool(control.get("sector_confirmation_enabled", True))
+            champion_challenger_enabled = bool(control.get("champion_challenger_enabled", True))
+            shadow_log_interval_sec = max(30, int(control.get("shadow_log_interval_sec", 60) or 60))
             stock_loss_streak_window_sec = max(60, int(control.get("stock_loss_streak_window_sec", 1800) or 1800))
             stock_loss_streak_count = max(1, int(control.get("stock_loss_streak_count", 2) or 2))
             stock_loss_streak_cooldown_sec = max(60, int(control.get("stock_loss_streak_cooldown_sec", 1800) or 1800))
@@ -1731,6 +1801,17 @@ def main() -> None:
                         except Exception as e:
                             notes.append(f"Bars refresh failed: {e}")
 
+                # V4.5 dynamic opportunity universe. Existing positions are always kept active.
+                closes_map = {ss: bars_cache.get_closes(ss) for ss in stocks}
+                if dynamic_universe_enabled:
+                    active_universe, universe_scores = dynamic_universe(
+                        stocks, closes_map, quotes_by_sym, intelligence,
+                        top_n=dynamic_universe_top_n, positions=positions_map,
+                    )
+                else:
+                    active_universe, universe_scores = list(stocks), {ss: 50.0 for ss in stocks}
+                active_universe_set = set(active_universe)
+
                 now_ts = time.time()
                 for sym in stocks:
                     st: Dict[str, Any] = {
@@ -1810,49 +1891,45 @@ def main() -> None:
                             symbols_state[sym] = st
                             continue
 
+                        effective_strategy = strategy_mode
+                        router_debug: Dict[str, Any] = {"mode": strategy_mode, "reason": "manual"}
+                        if adaptive_router_enabled and intelligence_enabled:
+                            try:
+                                effective_strategy, router_debug = adaptive_router.route(sym, strategy_mode)
+                            except Exception as e:
+                                st["debug"]["router_error"] = str(e)
+                        st["debug"]["router"] = router_debug
+                        st["debug"]["effective_strategy"] = effective_strategy
+                        st["debug"]["universe_score"] = universe_scores.get(sym)
+                        st["debug"]["universe_active"] = sym in active_universe_set
+
                         sig = 0
-                        if strategy_mode == "cross":
+                        if effective_strategy == "cross":
                             sig = crossover_signal(closes, fast_sma, slow_sma)
-                        elif strategy_mode == "trend":
+                        elif effective_strategy == "trend":
                             tsig = trend_state(closes, fast_sma, slow_sma)
                             sig = int(tsig or 0)
-                        elif strategy_mode == "scalp":
+                        elif effective_strategy == "meanrev":
+                            sig, dbg = mean_reversion_signal(closes, st.get("price"))
+                            st["debug"].update(dbg)
+                        elif effective_strategy == "scalp":
                             sig, dbg = scalp_signal(
-                                closes,
-                                st.get("price"),
-                                fast_sma,
-                                slow_sma,
-                                hype_mom_n,
-                                min_mom_pct,
-                                min_move_pct,
-                                min_slope_pct,
+                                closes, st.get("price"), fast_sma, slow_sma, hype_mom_n,
+                                min_mom_pct, min_move_pct, min_slope_pct,
                             )
                             st["debug"].update(dbg)
-                        else:
+                        else:  # event/hype route
                             tsig = trend_state(closes, fast_sma, slow_sma)
                             mom = momentum_score(closes, hype_mom_n)
                             slp = slope_of_sma(closes, fast_sma, lookback=3)
-
                             st["debug"]["mom"] = None if mom is None else round(mom, 6)
                             st["debug"]["slope_fast_sma"] = None if slp is None else round(slp, 6)
-
                             base = int(tsig or 0)
                             last_move = pct_change(closes[-2], closes[-1]) if len(closes) >= 2 else 0.0
                             st["debug"]["last_move_pct"] = round(last_move, 6)
-
-                            if (
-                                base > 0
-                                and mom is not None and mom >= abs(min_mom_pct)
-                                and slp is not None and slp >= abs(min_abs_slope)
-                                and last_move >= abs(min_move_pct)
-                            ):
+                            if base > 0 and mom is not None and mom >= abs(min_mom_pct) and slp is not None and slp >= abs(min_abs_slope) and last_move >= abs(min_move_pct):
                                 sig = 1
-                            elif (
-                                base < 0
-                                and mom is not None and mom <= -abs(min_mom_pct)
-                                and slp is not None and slp <= -abs(min_abs_slope)
-                                and last_move <= -abs(min_move_pct)
-                            ):
+                            elif base < 0 and mom is not None and mom <= -abs(min_mom_pct) and slp is not None and slp <= -abs(min_abs_slope) and last_move <= -abs(min_move_pct):
                                 sig = -1
 
                         st["signal"] = sig
@@ -1862,13 +1939,20 @@ def main() -> None:
                             try:
                                 intel = intelligence.score_symbol(sym, "STOCK", closes, sig, st["debug"], activity_profile)
                                 # Control.json can override thresholds without cluttering the UI.
+                                sector = sector_confirmation(intelligence, sym) if sector_confirmation_enabled else {"ok": True, "score": 0.0, "group": group_for_symbol(sym), "benchmark": ""}
+                                intel["sector_confirmation"] = sector
+                                intel["sector_score"] = sector.get("score", 0.0)
+                                intel["score"] = round(max(0.0, min(100.0, float(intel.get("score", 0)) + float(sector.get("score", 0)) * 0.45)), 1)
+                                sector_gate = bool(sector.get("ok", True)) or effective_strategy == "meanrev"
                                 intel["entry_allowed"] = bool(
                                     sig > 0
                                     and float(intel.get("score", 0)) >= intelligence_entry_score
+                                    and sector_gate
                                     and not bool(intel.get("event_blackout"))
                                     and not bool(intel.get("risk_veto"))
                                 )
                                 intel["exit_bias"] = bool(float(intel.get("score", 50)) <= intelligence_exit_score)
+                                st["debug"]["sector_confirmation"] = sector
                                 st["debug"]["intel_score"] = intel.get("score")
                                 st["debug"]["technical_score"] = intel.get("technical")
                                 st["debug"]["mtf_score"] = intel.get("mtf")
@@ -1890,7 +1974,7 @@ def main() -> None:
                                 profit_plan = profit_engine.plan(
                                     market="STOCK", symbol=sym, price=float(st["price"]), closes=closes,
                                     spread_bps=0.0 if quote_is_stale_early else float(st["debug"].get("spread_bps", 0.0) or 0.0),
-                                    intelligence=intel, strategy=strategy_mode, profile=activity_profile,
+                                    intelligence=intel, strategy=effective_strategy, profile=activity_profile,
                                     account_equity=account_equity, base_stock_qty=stock_qty,
                                     stock_slippage_bps=stock_slippage_bps,
                                     max_stock_notional_usd=max_stock_notional_usd,
@@ -1910,6 +1994,24 @@ def main() -> None:
                                 })
                             except Exception as e:
                                 st["debug"]["profit_engine_error"] = str(e)
+
+                        if champion_challenger_enabled and st.get("price") and profit_plan is not None:
+                            try:
+                                _pd = profit_plan.to_dict()
+                                _sector = intel.get("sector_confirmation") or {"ok": True, "score": 0.0}
+                                shadow_lab.observe(
+                                    symbol=sym, price=float(st["price"]), signal=int(sig or 0), intel=intel, plan=_pd,
+                                    router_mode=str(effective_strategy), sector=_sector,
+                                    champion_allowed=bool(intel.get("entry_allowed")) and bool(_pd.get("allowed")),
+                                    bot_version="4.5.0-adaptive-edge", min_interval_sec=shadow_log_interval_sec,
+                                )
+                            except Exception as e:
+                                st["debug"]["shadow_error"] = str(e)
+                        try:
+                            if st.get("price"):
+                                shadow_lab.update_outcomes(sym, float(st["price"]))
+                        except Exception:
+                            pass
 
                         if not armed or paused or kill:
                             st["action"] = "HOLD"
@@ -2138,7 +2240,9 @@ def main() -> None:
 
                         if sig > 0 and st["pos_qty"] <= 0:
                             qty = float(profit_plan.qty) if profit_engine_enabled and profit_plan is not None else stock_qty
-                            if entry_close_window:
+                            if dynamic_universe_enabled and sym not in active_universe_set:
+                                st["action"] = "WAIT_UNIVERSE"
+                            elif entry_close_window:
                                 st["action"] = f"WAIT_CLOSE:{minutes_to_close:.1f}m"
                             elif intelligence_enabled and not bool(intel.get("entry_allowed")):
                                 st["action"] = f"WAIT_INTEL:{float(intel.get('score', 0)):.0f}"
@@ -2211,7 +2315,7 @@ def main() -> None:
                                     "broker_bracket": broker_bracket,
                                     "created_at": utc_now_iso(),
                                     "entry_reference_price": float(st.get("ask") or st.get("price") or 0),
-                                    "strategy": strategy_mode,
+                                    "strategy": effective_strategy,
                                 })
                                 trade_plans[pkey] = plan_to_save
                                 save_trade_plans(trade_plans)
@@ -2630,9 +2734,24 @@ def main() -> None:
                 "intelligence": intelligence.summary() if intelligence_enabled else {"enabled": False},
                 "profit_engine": {
                     "enabled": bool(profit_engine_enabled),
-                    "version": "4.4-profit-stability",
+                    "version": "4.5-adaptive-edge",
                     "broker_brackets": bool(broker_bracket_enabled),
                     "journal": "learning_v3.sqlite",
+                    "calibration": profit_engine.calibration_summary("STOCK"),
+                },
+                "adaptive_edge": {
+                    "enabled": True,
+                    "router": bool(adaptive_router_enabled),
+                    "dynamic_universe": bool(dynamic_universe_enabled),
+                    "active_symbols": len(active_universe_set) if trade_stocks and stock_ok else 0,
+                    "total_symbols": len(stocks),
+                    "sector_confirmation": bool(sector_confirmation_enabled),
+                    "shadow": shadow_lab.summary() if champion_challenger_enabled else {"enabled": False},
+                },
+                "market_data": {
+                    "stock_feed": cfg.stock_feed,
+                    "sip_active": str(cfg.stock_feed).lower() == "sip",
+                    "stock_stream_symbols": len(getattr(intelligence, "stock_stream_symbols", []) or []),
                 },
                 "execution_guard": execution_guard.summary(),
                 "daily_loss_limit_usd_effective": round(effective_daily_loss_limit, 2),
