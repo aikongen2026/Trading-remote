@@ -14,6 +14,7 @@ from __future__ import annotations
 import math
 import os
 import sqlite3
+from contextlib import closing
 import threading
 import time
 from datetime import datetime, timezone
@@ -206,7 +207,7 @@ class ShadowLab:
 
     def _ensure(self) -> None:
         try:
-            with sqlite3.connect(self.path, timeout=3) as db:
+            with closing(sqlite3.connect(self.path, timeout=3)) as db, db:
                 db.execute("""CREATE TABLE IF NOT EXISTS shadow_signals(
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     ts TEXT NOT NULL, symbol TEXT NOT NULL, model TEXT NOT NULL,
@@ -243,7 +244,7 @@ class ShadowLab:
         now = time.time()
         ts = datetime.now(UTC).isoformat()
         try:
-            with self.lock, sqlite3.connect(self.path, timeout=3) as db:
+            with self.lock, closing(sqlite3.connect(self.path, timeout=3)) as db, db:
                 for model, yes in flags.items():
                     if not yes:
                         continue
@@ -265,7 +266,7 @@ class ShadowLab:
             return
         now = datetime.now(UTC)
         try:
-            with self.lock, sqlite3.connect(self.path, timeout=3) as db:
+            with self.lock, closing(sqlite3.connect(self.path, timeout=3)) as db, db:
                 rows = db.execute(
                     "SELECT id,ts,price FROM shadow_signals WHERE symbol=? AND outcome_15m IS NULL ORDER BY id DESC LIMIT 250",
                     (norm(symbol),),
@@ -278,7 +279,7 @@ class ShadowLab:
                         age = (now - d.astimezone(UTC)).total_seconds()
                     except Exception:
                         continue
-                    if age >= 900 and sf(entry) > 0:
+                    if 900 <= age <= 1080 and sf(entry) > 0:
                         db.execute("UPDATE shadow_signals SET outcome_15m=? WHERE id=?", (pct(sf(entry), current_price), rid))
                 db.commit()
         except Exception:
@@ -287,7 +288,7 @@ class ShadowLab:
     def summary(self) -> Dict[str, Any]:
         out: Dict[str, Any] = {"enabled": True, "models": {}}
         try:
-            with self.lock, sqlite3.connect(self.path, timeout=3) as db:
+            with self.lock, closing(sqlite3.connect(self.path, timeout=3)) as db, db:
                 for model in self.MODELS:
                     rows = db.execute(
                         "SELECT outcome_15m FROM shadow_signals WHERE model=? AND outcome_15m IS NOT NULL ORDER BY id DESC LIMIT 1000",

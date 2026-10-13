@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 import os, sqlite3, tempfile, threading
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -70,7 +71,7 @@ with tempfile.TemporaryDirectory() as td:
     lab=ShadowLab(td)
     lab.observe(symbol='ABC',price=100,signal=1,intel={'score':75,'micro':3},plan={'probability_up':.61,'expected_value_bps':12},router_mode='trend',sector={'ok':True,'score':3},champion_allowed=True,bot_version='4.5.0-adaptive-edge',min_interval_sec=1)
     dbp=Path(td)/'learning_v3.sqlite'
-    with sqlite3.connect(dbp) as db:
+    with closing(sqlite3.connect(dbp)) as db, db:
         n=db.execute('select count(*) from shadow_signals').fetchone()[0]
         db.execute('update shadow_signals set ts=?',( (datetime.now(timezone.utc)-timedelta(minutes=16)).isoformat(), ))
         db.commit()
@@ -81,5 +82,5 @@ with tempfile.TemporaryDirectory() as td:
 
 # Revision tag survives into broker client_order_id.
 cid=__import__('execution_guard').make_client_order_id('tbe-','STOCK','ABC')
-check('v450' in cid,'new orders carry V4.5 revision tag')
+check('v460' in cid,'new orders carry current revision tag')
 print('V4.5 TEST PASSED')

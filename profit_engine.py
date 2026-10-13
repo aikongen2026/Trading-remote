@@ -16,6 +16,7 @@ from __future__ import annotations
 import math
 import os
 import sqlite3
+from contextlib import closing
 import statistics
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
@@ -155,12 +156,12 @@ class OutcomeCalibrator:
         if outcome_col not in {"outcome_5m", "outcome_15m", "outcome_60m"}:
             outcome_col = "outcome_15m"
         try:
-            with sqlite3.connect(self.db_path, timeout=2) as db:
+            with closing(sqlite3.connect(self.db_path, timeout=2)) as db, db:
                 return db.execute(
                     f"""SELECT ts,symbol,composite,probability_up,{outcome_col},action
                         FROM decisions
                         WHERE market=? AND {outcome_col} IS NOT NULL
-                          AND signal>0 AND action LIKE 'BUY%'
+                          AND signal>0 AND action LIKE 'BUY%' AND event_type='ENTRY'
                         ORDER BY id DESC LIMIT ?""",
                     (market, int(limit)),
                 ).fetchall()
@@ -256,11 +257,11 @@ class ProfitEngine:
         if not os.path.exists(self.db_path):
             return out
         try:
-            with sqlite3.connect(self.db_path, timeout=2) as db:
+            with closing(sqlite3.connect(self.db_path, timeout=2)) as db, db:
                 rows = db.execute(
                     """SELECT probability_up,outcome_15m FROM decisions
                        WHERE market=? AND probability_up IS NOT NULL AND outcome_15m IS NOT NULL
-                         AND signal>0 AND action LIKE 'BUY%'
+                         AND signal>0 AND action LIKE 'BUY%' AND event_type='ENTRY'
                        ORDER BY id DESC LIMIT 3000""",
                     (str(market).upper(),),
                 ).fetchall()

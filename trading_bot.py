@@ -36,6 +36,7 @@ from intelligence_engine import IntelligenceEngine, group_for_symbol
 from profit_engine import ProfitEngine
 from execution_guard import ExecutionGuard
 from adaptive_edge import AdaptiveRouter, ShadowLab, dynamic_universe, sector_confirmation
+from runtime_audit import RuntimeAudit, EntryConfirmation, supervise_stocks, epoch
 
 try:
     import tkinter as tk
@@ -52,6 +53,11 @@ CONTROL_PATH = os.path.join(STATE_DIR, "control.json")
 STATUS_PATH = os.path.join(STATE_DIR, "status.json")
 TRADE_PLANS_PATH = os.path.join(STATE_DIR, "trade_plans_v4.json")
 BOT_INSTANCE_PORT = int(os.getenv("TRADINGBOT_INSTANCE_PORT", "5051"))
+
+
+def runtime_bot_version() -> str:
+    with open(os.path.join(HERE, "VERSION.txt"), encoding="utf-8-sig") as version_file:
+        return version_file.read().strip()
 
 
 def acquire_single_instance_socket() -> socket.socket:
@@ -152,6 +158,7 @@ DEFAULT_CONTROL: Dict[str, Any] = {
     # V4.4 profit/stability controls derived from the 7-day execution review.
     "stock_entry_cutoff_min": 15,
     "stock_flatten_before_close_min": 5,
+    "stock_entry_confirm_sec": 15,
     "stock_loss_streak_window_sec": 1800,
     "stock_loss_streak_count": 2,
     "stock_loss_streak_cooldown_sec": 1800,
@@ -1258,6 +1265,9 @@ def intelligence_from_status(st: Dict[str, Any]) -> Dict[str, Any]:
         "peak_price": dbg.get("peak_price"),
         "spread_bps": dbg.get("spread_bps"),
         "quote_age_sec": dbg.get("quote_age_sec"),
+        "context_json": {"strategy": dbg.get("effective_strategy"), "router": dbg.get("router"),
+                         "sector_confirmation": dbg.get("sector_confirmation"), "debug": dbg,
+                         "bid": st.get("bid"), "ask": st.get("ask"), "action": st.get("action")},
     }
 
 
@@ -1352,6 +1362,9 @@ class BarsCache:
     def __init__(self) -> None:
         self.data: Dict[str, List[Dict[str, Any]]] = {}
         self.last_refresh_ts: Dict[str, float] = {}
+
+    def get_bars(self, symbol: str) -> List[Dict[str, Any]]:
+        return list(self.data.get(symbol.upper()) or [])
 
     def get_closes(self, symbol: str) -> List[float]:
         bars = self.data.get(symbol.upper()) or []
@@ -1476,6 +1489,7 @@ def main() -> None:
     cached_account: Dict[str, Any] = {"value": acct if isinstance(acct, dict) else {}, "ts": time.time() if acct else 0.0}
     cached_positions: Dict[str, Any] = {"value": [], "ts": 0.0}
     cached_orders: Dict[str, Any] = {"value": [], "ts": 0.0}
+    cached_open_orders: Dict[str, Any] = {"value": [], "ts": 0.0}
     cached_profit_history: Dict[str, Any] = {"value": {}, "ts": 0.0}
 
     # Intelligence + research-edge profit engine run behind the existing simple dashboard.
@@ -1489,6 +1503,8 @@ def main() -> None:
     shadow_lab = ShadowLab(STATE_DIR)
     trade_plans = load_trade_plans()
     execution_guard = ExecutionGuard(STATE_DIR)
+    runtime_audit = RuntimeAudit(STATE_DIR)
+    entry_confirmation = EntryConfirmation()
     soft_exit_since: Dict[str, Tuple[str, float]] = {}
     last_decision_snapshot_ts = 0.0
 
@@ -1646,7 +1662,8 @@ def main() -> None:
                 if (now_api - cached_positions["ts"]) >= 2.0:
                     future_map[pool.submit(api.positions)] = "positions"
                 if (now_api - cached_orders["ts"]) >= 2.0:
-                    future_map[pool.submit(api.get_orders, 100, "all", True)] = "orders"
+                    future_map[pool.submit(api.get_orders, 500, "all", True)] = "orders"
+                    future_map[pool.submit(api.get_orders, 500, "open", True)] = "open_orders"
                 if (now_api - cached_clock["ts"]) >= 10.0:
                     future_map[pool.submit(api.clock)] = "clock"
                 if (now_api - cached_profit_history["ts"]) >= 60.0:
@@ -1666,9 +1683,16 @@ def main() -> None:
             if isinstance(results.get("positions"), list):
                 cached_positions["value"] = results["positions"]
                 cached_positions["ts"] = time.time()
+            if isinstance(results.get("open_orders"), list):
+                cached_open_orders["value"] = results["open_orders"]
+                cached_open_orders["ts"] = time.time()
             if isinstance(results.get("orders"), list):
                 cached_orders["value"] = results["orders"]
                 cached_orders["ts"] = time.time()
+                if isinstance(results.get("open_orders"), list):
+                    combined = {str(o.get("id")): o for o in cached_orders["value"]}
+                    combined.update({str(o.get("id")): o for o in results["open_orders"]})
+                    cached_orders["value"] = list(combined.values())
             if isinstance(results.get("clock"), dict):
                 cached_clock["value"] = results["clock"]
                 cached_clock["ts"] = time.time()
@@ -1700,7 +1724,8 @@ def main() -> None:
             stock_session = current_stock_session(regular_market_open, allow_extended)
             extended_session_open = stock_session in {"PREMARKET", "AFTERHOURS", "OVERNIGHT"}
             stock_ok = trade_stocks and stock_session != "CLOSED"
-            minutes_to_close = regular_minutes_to_close_et() if regular_market_open else None
+            close_epoch = epoch(clk.get("next_close"))
+            minutes_to_close = max(0.0, (close_epoch-time.time())/60.0) if regular_market_open and close_epoch else None
             entry_close_window = bool(minutes_to_close is not None and stock_entry_cutoff_min > 0 and minutes_to_close <= stock_entry_cutoff_min)
             flatten_close_window = bool(minutes_to_close is not None and stock_flatten_before_close_min > 0 and minutes_to_close <= stock_flatten_before_close_min)
             stock_live_feed = "overnight" if stock_session == "OVERNIGHT" else cfg.stock_feed
@@ -1729,6 +1754,20 @@ def main() -> None:
                 risk_blocked = True
 
             symbols_state: Dict[str, Any] = {}
+            broker_fresh = all(time.time()-cache["ts"] < 15 for cache in (cached_positions, cached_orders, cached_open_orders, cached_clock))
+            if "orders" in results and not isinstance(results.get("open_orders"), list):
+                broker_fresh = False
+            supervision = {"actions": {}, "unknown_positions": [], "missing_protection": []}
+            if broker_fresh:
+                supervision = supervise_stocks(api, pos_raw, orders, trade_plans, execution_guard,
+                                               control, clk, runtime_audit)
+                save_trade_plans(trade_plans)
+            else:
+                notes.append("Broker data stale: entries blocked; supervision awaiting fresh positions/orders/clock")
+            if supervision["actions"]:
+                notes.append("Risk supervision: " + json.dumps(supervision["actions"]))
+            if runtime_audit.summary().get("warning"):
+                notes.append(runtime_audit.summary()["warning"])
             if trade_stocks and not stocks:
                 notes.append("Ingen aksjesymboler i control.json['symbols'].")
             elif trade_stocks and not stock_ok:
@@ -1813,6 +1852,7 @@ def main() -> None:
                 active_universe_set = set(active_universe)
 
                 now_ts = time.time()
+                runtime_audit.capture_bars({s: bars_cache.get_bars(s) for s in stocks}, cfg.stock_feed)
                 for sym in stocks:
                     st: Dict[str, Any] = {
                         "market": "STOCK",
@@ -1837,6 +1877,10 @@ def main() -> None:
                                 st["avg_entry"] = float(pos.get("avg_entry_price", 0) or 0)
                             except Exception:
                                 pass
+                        if sym in supervision["actions"]:
+                            st.update(supervision["actions"][sym])
+                            symbols_state[sym] = st
+                            continue
 
                         q = quotes_by_sym.get(sym.upper())
                         quote_age_ok = True
@@ -1873,7 +1917,9 @@ def main() -> None:
                                 pass
 
                         closes = bars_cache.get_closes(sym.upper())
-                        quote_is_stale_early = bool(isinstance(q, dict) and not quote_age_ok)
+                        quote_dt = parse_any_ts(st.get("quote_time")) if st.get("quote_time") else None
+                        quote_is_stale_early = not (quote_dt and st.get("bid") and st.get("ask") and quote_age_ok
+                                                   and -2 <= (utc_now()-quote_dt).total_seconds() <= quote_stale_sec)
                         if quote_is_stale_early:
                             # Never feed stale/wide quotes into EV, stop-loss, or sizing.
                             if "spread_bps" in st["debug"]:
@@ -2003,7 +2049,7 @@ def main() -> None:
                                     symbol=sym, price=float(st["price"]), signal=int(sig or 0), intel=intel, plan=_pd,
                                     router_mode=str(effective_strategy), sector=_sector,
                                     champion_allowed=bool(intel.get("entry_allowed")) and bool(_pd.get("allowed")),
-                                    bot_version="4.5.0-adaptive-edge", min_interval_sec=shadow_log_interval_sec,
+                                    bot_version=runtime_bot_version(), min_interval_sec=shadow_log_interval_sec,
                                 )
                             except Exception as e:
                                 st["debug"]["shadow_error"] = str(e)
@@ -2065,9 +2111,13 @@ def main() -> None:
                                 execution_guard.block_entry("STOCK", sym, "existing_position")
 
                             if sym not in position_seen_ts:
-                                position_seen_ts[sym] = now_ts
-                            peak = max(position_peak_price.get(sym, live_price), live_price)
+                                position_seen_ts[sym] = epoch(saved_plan.get("entry_filled_at") or saved_plan.get("created_at")) or now_ts
+                            peak = max(position_peak_price.get(sym, float(saved_plan.get("peak_price") or live_price)), live_price)
                             position_peak_price[sym] = peak
+                            if saved_plan and peak != float(saved_plan.get("peak_price") or 0):
+                                saved_plan["peak_price"] = peak
+                                trade_plans[pkey] = saved_plan
+                                save_trade_plans(trade_plans)
                             held_sec = max(0.0, now_ts - position_seen_ts.get(sym, now_ts))
                             st["debug"]["held_sec"] = int(held_sec)
                             st["debug"]["peak_price"] = round(peak, 4)
@@ -2078,7 +2128,7 @@ def main() -> None:
                             sl_pct = max(0.0, float(active_plan.get("stop_loss_pct", stop_loss_pct) or stop_loss_pct))
                             trail_activate = max(0.0, float(active_plan.get("trailing_activate_pct", trailing_activate_pct) or trailing_activate_pct))
                             trail_stop = max(0.0, float(active_plan.get("trailing_stop_pct", trailing_stop_pct) or trailing_stop_pct))
-                            broker_bracket = bool(active_plan.get("broker_bracket", False) or has_open_sell_order_for_symbol(orders, sym))
+                            broker_bracket = has_open_sell_order_for_symbol(orders, sym)
                             st["debug"]["active_tp_pct"] = round(tp_pct, 6)
                             st["debug"]["active_sl_pct"] = round(sl_pct, 6)
                             st["debug"]["broker_bracket"] = broker_bracket
@@ -2186,6 +2236,8 @@ def main() -> None:
                                     intel_log = intelligence_with_plan(intel, active_plan)
                                     intel_log.update({
                                         "bot_version": runtime_bot_version(), "event_type": "EXIT_REQUEST",
+                                        "client_order_id": (execution_guard.get_exit("STOCK", sym) or {}).get("client_order_id"),
+                                        "order_id": (execution_guard.get_exit("STOCK", sym) or {}).get("order_id"),
                                         "exit_reason": exit_reason, "position_qty": float(st.get("pos_qty") or 0),
                                         "avg_entry": avg_entry, "held_sec": held_sec, "peak_price": peak,
                                         "spread_bps": st.get("debug", {}).get("spread_bps"),
@@ -2219,7 +2271,7 @@ def main() -> None:
                                 saved_plan = {}
 
                         open_position_count = sum(
-                            1 for p in (pos_raw if isinstance(pos_raw, list) else [])
+                            1 for p in positions_map.values()
                             if float(p.get("qty", 0) or 0) > 0
                             and str(p.get("asset_class", "")).lower() != "crypto"
                             and str(p.get("exchange", "")).upper() != "CRYPTO"
@@ -2229,7 +2281,7 @@ def main() -> None:
 
                         current_group = group_for_symbol(sym)
                         same_group_count = sum(
-                            1 for p in (pos_raw if isinstance(pos_raw, list) else [])
+                            1 for p in positions_map.values()
                             if float(p.get("qty", 0) or 0) > 0
                             and "/" not in str(p.get("symbol", ""))
                             and str(p.get("symbol", "")).upper() in set(stocks)
@@ -2237,10 +2289,29 @@ def main() -> None:
                         )
                         st["debug"]["group"] = current_group
                         st["debug"]["same_group_positions"] = same_group_count
+                        candidate_ok = (sig > 0 and st["pos_qty"] <= 0 and not quote_is_stale
+                                        and bool(intel.get("entry_allowed"))
+                                        and (not profit_engine_enabled or (profit_plan is not None and profit_plan.allowed)))
+                        last_bar_epoch = epoch((bars_cache.get_bars(sym)[-1] if bars_cache.get_bars(sym) else {}).get("t"))
+                        bar_fresh = last_bar_epoch is not None and -2 <= now_ts-last_bar_epoch <= max(180, timeframe_to_seconds(timeframe)*3)
+                        candidate_ok = candidate_ok and bar_fresh and broker_fresh and not paused and armed and not kill
+                        confirmed = entry_confirmation.ready(sym, effective_strategy, candidate_ok, now_ts,
+                                                             float(control.get("stock_entry_confirm_sec", 15)))
+                        st["debug"]["entry_confirmed"] = confirmed
 
                         if sig > 0 and st["pos_qty"] <= 0:
                             qty = float(profit_plan.qty) if profit_engine_enabled and profit_plan is not None else stock_qty
-                            if dynamic_universe_enabled and sym not in active_universe_set:
+                            if not broker_fresh:
+                                st["action"] = "WAIT_BROKER_DATA"
+                            elif not bar_fresh:
+                                st["action"] = "WAIT_FRESH_BARS"
+                            elif not runtime_audit.summary()["persistent"] and not cfg.paper:
+                                st["action"] = "WAIT_PERSISTENT_STORAGE"
+                            elif runtime_audit.last_error:
+                                st["action"] = "WAIT_MARKET_AUDIT"
+                            elif intelligence_enabled and (not intelligence.journal._enabled or intelligence.journal.last_error):
+                                st["action"] = "WAIT_AUDIT_LOG"
+                            elif dynamic_universe_enabled and sym not in active_universe_set:
                                 st["action"] = "WAIT_UNIVERSE"
                             elif entry_close_window:
                                 st["action"] = f"WAIT_CLOSE:{minutes_to_close:.1f}m"
@@ -2258,6 +2329,8 @@ def main() -> None:
                                 st["action"] = "WAIT_NEW_SIGNAL"
                             elif quote_is_stale:
                                 st["action"] = "QUOTE_STALE"
+                            elif not confirmed:
+                                st["action"] = "WAIT_ENTRY_CONFIRMATION"
                             elif risk_blocked:
                                 st["action"] = "RISK_BLOCKED"
                             elif skip_if_open_order and has_open_order_for_symbol(orders, sym):
@@ -2296,17 +2369,17 @@ def main() -> None:
                                             continue
                                         tp_price = ref_price * (1.0 + float(profit_plan.take_profit_pct))
                                         stop_price = ref_price * (1.0 - float(profit_plan.stop_loss_pct))
-                                        api.submit_bracket_order(sym, qty, tp_price, stop_price, tif="day", client_order_id=entry_cid)
+                                        entry_response = api.submit_bracket_order(sym, qty, tp_price, stop_price, tif="day", client_order_id=entry_cid)
                                         broker_bracket = True
                                     else:
-                                        api.submit_order(sym, "buy", qty, tif="day", client_order_id=entry_cid)
+                                        entry_response = api.submit_order(sym, "buy", qty, tif="day", client_order_id=entry_cid)
                                 else:
                                     if not extended_session_open or not st.get("ask"):
                                         st["action"] = "WAIT_EXTENDED_QUOTE"
                                         symbols_state[sym] = st
                                         continue
                                     buy_limit = float(st["ask"]) * (1.0 + extended_limit_buffer_bps / 10000.0)
-                                    api.submit_order(
+                                    entry_response = api.submit_order(
                                         sym, "buy", qty, tif="day", order_type="limit",
                                         limit_price=buy_limit, extended_hours=True, client_order_id=entry_cid,
                                     )
@@ -2316,6 +2389,10 @@ def main() -> None:
                                     "created_at": utc_now_iso(),
                                     "entry_reference_price": float(st.get("ask") or st.get("price") or 0),
                                     "strategy": effective_strategy,
+                                    "entry_client_order_id": entry_cid,
+                                    "order_id": (entry_response or {}).get("id"),
+                                    "entry_filled_at": (entry_response or {}).get("filled_at"),
+                                    "confirmed_qty": float((entry_response or {}).get("filled_qty") or 0),
                                 })
                                 trade_plans[pkey] = plan_to_save
                                 save_trade_plans(trade_plans)
@@ -2334,6 +2411,10 @@ def main() -> None:
                                         "client_order_id": entry_cid, "position_qty": qty,
                                         "spread_bps": st.get("debug", {}).get("spread_bps"),
                                         "quote_age_sec": st.get("debug", {}).get("quote_age_sec"),
+                                        "order_id": (entry_response or {}).get("id"),
+                                        "context_json": {"debug": st.get("debug"), "plan": plan_to_save,
+                                                         "bid": st.get("bid"), "ask": st.get("ask"),
+                                                         "settings": {k: control.get(k) for k in ("stock_entry_confirm_sec", "max_hold_sec", "intelligence_entry_score", "activity_profile")}},
                                     })
                                     intelligence.record_decision(sym, "STOCK", st.get("price"), sig, st["action"], intel_log)
                                 positions_map[sym] = {"symbol": sym, "qty": str(qty), "avg_entry_price": str(st.get("price") or 0)}
@@ -2674,7 +2755,8 @@ def main() -> None:
                                         "trailing_activate_pct": crypto_trailing_activate_pct, "trailing_stop_pct": crypto_trailing_stop_pct,
                                         "notional_usd": notional, "expected_value_bps": None, "probability_up_pct": None,
                                     }
-                                    plan_to_save.update({"broker_bracket": False, "created_at": utc_now_iso(), "strategy": crypto_strategy_mode})
+                                    plan_to_save.update({"broker_bracket": False, "created_at": utc_now_iso(), "strategy": crypto_strategy_mode,
+                                                         "entry_client_order_id": entry_cid})
                                     trade_plans[k] = plan_to_save
                                     save_trade_plans(trade_plans)
                                     popup_trade(f"CRYPTO BUY {sym} ${notional:.0f}")
@@ -2687,6 +2769,7 @@ def main() -> None:
                                     )
                                     if intelligence_enabled:
                                         intel_log = intelligence_with_plan(intel, plan_to_save)
+                                        intel_log.update({"bot_version": runtime_bot_version(), "event_type": "ENTRY", "client_order_id": entry_cid})
                                         intelligence.record_decision(sym, "CRYPTO", st.get("price"), sig, st["action"], intel_log)
                                     crypto_position_count += 1
                             else:
@@ -2713,6 +2796,8 @@ def main() -> None:
                 last_decision_snapshot_ts = time.time()
 
             out = {
+                "version": runtime_bot_version(),
+                "build_id": os.getenv("RENDER_GIT_COMMIT", "local")[:12],
                 "paper": cfg.paper,
                 "auth_ok": True,
                 "engine_state": "RUNNING",
@@ -2734,7 +2819,7 @@ def main() -> None:
                 "intelligence": intelligence.summary() if intelligence_enabled else {"enabled": False},
                 "profit_engine": {
                     "enabled": bool(profit_engine_enabled),
-                    "version": "4.5-adaptive-edge",
+                    "version": runtime_bot_version(),
                     "broker_brackets": bool(broker_bracket_enabled),
                     "journal": "learning_v3.sqlite",
                     "calibration": profit_engine.calibration_summary("STOCK"),
@@ -2754,6 +2839,11 @@ def main() -> None:
                     "stock_stream_symbols": len(getattr(intelligence, "stock_stream_symbols", []) or []),
                 },
                 "execution_guard": execution_guard.summary(),
+                "risk_supervision": supervision,
+                "audit_health": runtime_audit.summary(),
+                "learning_health": {"enabled": intelligence.journal._enabled,
+                                    "last_error": intelligence.journal.last_error,
+                                    "last_write_utc": intelligence.journal.last_write},
                 "daily_loss_limit_usd_effective": round(effective_daily_loss_limit, 2),
                 "minutes_to_regular_close": None if minutes_to_close is None else round(minutes_to_close, 1),
                 "entry_close_window": entry_close_window,

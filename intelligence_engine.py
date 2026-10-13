@@ -19,6 +19,7 @@ import math
 import os
 import re
 import sqlite3
+from contextlib import closing
 import threading
 import time
 import xml.etree.ElementTree as ET
@@ -211,9 +212,11 @@ class SignalJournal:
         self.path = path
         self._lock = threading.Lock()
         self._enabled = True
+        self.last_error = ""
+        self.last_write = None
         try:
             Path(path).parent.mkdir(parents=True, exist_ok=True)
-            with sqlite3.connect(path, timeout=3) as db:
+            with closing(sqlite3.connect(path, timeout=3)) as db, db:
                 db.execute("PRAGMA journal_mode=WAL")
                 db.execute(
                     """CREATE TABLE IF NOT EXISTS decisions(
@@ -260,7 +263,7 @@ class SignalJournal:
                     "estimated_cost_bps", "outcome_5m", "outcome_15m", "outcome_60m",
                     "position_qty", "avg_entry", "held_sec", "peak_price", "spread_bps", "quote_age_sec"
                 )
-                text_cols = ("bot_version", "event_type", "exit_reason", "client_order_id", "order_id")
+                text_cols = ("bot_version", "event_type", "exit_reason", "client_order_id", "order_id", "context_json")
                 for col in real_cols:
                     if col not in cols:
                         db.execute(f"ALTER TABLE decisions ADD COLUMN {col} REAL")
@@ -268,20 +271,21 @@ class SignalJournal:
                     if col not in cols:
                         db.execute(f"ALTER TABLE decisions ADD COLUMN {col} TEXT")
                 db.commit()
-        except Exception:
+        except Exception as exc:
             self._enabled = False
+            self.last_error = type(exc).__name__ + ': ' + str(exc)
 
     def log(self, row: Dict[str, Any]) -> None:
         if not self._enabled:
             return
         try:
-            with self._lock, sqlite3.connect(self.path, timeout=3) as db:
+            with self._lock, closing(sqlite3.connect(self.path, timeout=3)) as db, db:
                 db.execute(
                     """INSERT INTO decisions(
                     ts,symbol,market,price,technical,mtf,relative,news,regime,global_risk,composite,signal,action,reason,
                     probability_up,expected_value_bps,take_profit_pct,stop_loss_pct,estimated_cost_bps,
-                    bot_version,event_type,exit_reason,client_order_id,order_id,position_qty,avg_entry,held_sec,peak_price,spread_bps,quote_age_sec)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    bot_version,event_type,exit_reason,client_order_id,order_id,position_qty,avg_entry,held_sec,peak_price,spread_bps,quote_age_sec,context_json)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         row.get("ts") or utc_now().isoformat(), row.get("symbol"), row.get("market"),
                         row.get("price"), row.get("technical"), row.get("mtf"), row.get("relative"),
@@ -293,18 +297,21 @@ class SignalJournal:
                         row.get("client_order_id"), row.get("order_id"), row.get("position_qty"),
                         row.get("avg_entry"), row.get("held_sec"), row.get("peak_price"),
                         row.get("spread_bps"), row.get("quote_age_sec"),
+                        json.dumps(row.get("context_json"), ensure_ascii=False, default=str),
                     ),
                 )
                 db.commit()
-        except Exception:
-            pass
+                self.last_write = utc_now().isoformat()
+                self.last_error = ""
+        except Exception as exc:
+            self.last_error = type(exc).__name__ + ': ' + str(exc)
 
     def update_outcomes(self, symbol: str, current_price: float) -> None:
         if not self._enabled or current_price <= 0:
             return
         now = utc_now()
         try:
-            with self._lock, sqlite3.connect(self.path, timeout=3) as db:
+            with self._lock, closing(sqlite3.connect(self.path, timeout=3)) as db, db:
                 rows = db.execute(
                     "SELECT id, ts, price, outcome_5m, outcome_15m, outcome_60m FROM decisions WHERE symbol=? AND price>0 ORDER BY id DESC LIMIT 250",
                     (symbol,),
@@ -317,11 +324,11 @@ class SignalJournal:
                     updates = []
                     vals = []
                     ret = pct(float(entry), current_price)
-                    if o5 is None and 300 <= age < 1200:
+                    if o5 is None and 300 <= age <= 480:
                         updates.append("outcome_5m=?"); vals.append(ret)
-                    if o15 is None and 900 <= age < 3600:
+                    if o15 is None and 900 <= age <= 1080:
                         updates.append("outcome_15m=?"); vals.append(ret)
-                    if o60 is None and age >= 3600:
+                    if o60 is None and 3600 <= age <= 3780:
                         updates.append("outcome_60m=?"); vals.append(ret)
                     if updates:
                         vals.append(rid)
@@ -1426,6 +1433,7 @@ class IntelligenceEngine:
             "peak_price": intelligence.get("peak_price"),
             "spread_bps": intelligence.get("spread_bps"),
             "quote_age_sec": intelligence.get("quote_age_sec"),
+            "context_json": intelligence.get("context_json"),
         })
 
     def summary(self) -> Dict[str, Any]:

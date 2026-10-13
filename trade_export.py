@@ -14,6 +14,8 @@ import io
 import json
 import re
 import sqlite3
+from contextlib import closing
+from runtime_audit import read_evidence, storage_health
 import time
 import zipfile
 from collections import Counter
@@ -218,7 +220,7 @@ def _learning_rows(state_dir: Path, since: datetime) -> List[Dict[str, Any]]:
     if not path.exists():
         return []
     try:
-        with sqlite3.connect(str(path), timeout=5) as db:
+        with closing(sqlite3.connect(str(path), timeout=5)) as db, db:
             db.row_factory = sqlite3.Row
             names = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             if "decisions" not in names:
@@ -642,15 +644,21 @@ def _fetch_trade_bars(api: Any, trades: List[Dict[str, Any]], manifest: Dict[str
     out: Dict[str, List[Dict[str, Any]]] = {}
     start = str(manifest.get("range_start_utc") or "")
     end = str(manifest.get("range_end_utc") or "")
-    limit = min(20000, max(1200, int(days)*600 + 600))
+    limit = max(1200, int(days)*1440 + 1440)
+    feed = getattr(getattr(api, "cfg", None), "stock_feed", "iex")
+    if feed not in {"iex", "sip", "delayed_sip"}:
+        try:
+            feed = api.resolve_stock_feed()
+        except Exception:
+            feed = "iex"
     def chunks(xs: List[str], n: int = 10):
         for i in range(0, len(xs), n): yield xs[i:i+n]
     for chunk in chunks(stock):
         try:
-            got = api.bars(chunk, "1Min", limit, start, end, getattr(getattr(api, "cfg", None), "stock_feed", None))
+            got = api.bars(chunk, "1Min", limit, start, end, feed)
             if isinstance(got, dict): out.update(got)
         except Exception as exc:
-            errors.append(f"stock_bars:{','.join(chunk)}:{type(exc).__name__}")
+            errors.append(f"stock_bars:{','.join(chunk)}:{type(exc).__name__}:HTTP {getattr(exc, 'status_code', 'unknown')}:feed={feed}")
     for chunk in chunks(crypto):
         try:
             got = api.crypto_bars(chunk, "1Min", limit, start, end)
@@ -667,7 +675,7 @@ def _shadow_rows(state_dir: str | Path, start_utc: Any, end_utc: Any) -> List[Di
     end = str(end_utc or "")
     try:
         import sqlite3
-        with sqlite3.connect(path, timeout=3) as db:
+        with closing(sqlite3.connect(path, timeout=3)) as db, db:
             cols = [x[1] for x in db.execute("PRAGMA table_info(shadow_signals)").fetchall()]
             if not cols:
                 return []
@@ -723,13 +731,21 @@ def build_ai_analysis_export(days: int, state_dir: str | Path, bot_version: str,
         et = _parse_dt_any(row.get("entry_time")); xt = _parse_dt_any(row.get("exit_time"))
         entry_dec = _decision_window(decisions, str(row.get("symbol") or ""), et)
         exit_dec = _decision_window(decisions, str(row.get("symbol") or ""), xt)
+        entry_exact = next((d for d in decisions if d.get("event_type") == "ENTRY" and
+                            ((eo.get("client_order_id") and d.get("client_order_id") == eo.get("client_order_id")) or
+                             (eo.get("id") and d.get("order_id") == eo.get("id")))), None)
+        exit_exact = next((d for d in decisions if d.get("event_type") == "EXIT_REQUEST" and
+                           ((xo.get("client_order_id") and d.get("client_order_id") == xo.get("client_order_id")) or
+                            (xo.get("id") and d.get("order_id") == xo.get("id")))), None)
+        entry_dec = entry_exact or entry_dec
+        exit_dec = exit_exact or exit_dec
         legs = eo.get("legs") or []
         tp_leg = next((x for x in legs if str(x.get("order_type") or x.get("type") or "").lower()=="limit" and str(x.get("side") or "").lower()=="sell"), {}) if isinstance(legs,list) else {}
         sl_leg = next((x for x in legs if str(x.get("order_type") or x.get("type") or "").lower()=="stop" and str(x.get("side") or "").lower()=="sell"), {}) if isinstance(legs,list) else {}
         exit_type = str(xo.get("order_type") or xo.get("type") or "unknown").lower()
         inferred = "BROKER_STOP" if exit_type=="stop" else ("BROKER_TAKE_PROFIT" if exit_type=="limit" else "BOT_MARKET_EXIT")
-        if exit_dec and exit_dec.get("exit_reason"):
-            inferred = str(exit_dec.get("exit_reason"))
+        if exit_exact and exit_exact.get("exit_reason"):
+            inferred = str(exit_exact.get("exit_reason"))
         edp = _num((entry_dec or {}).get("price"), 0.0)
         xdp = _num((exit_dec or {}).get("price"), 0.0)
         ep = _num(row.get("entry_price"), 0.0); xp = _num(row.get("exit_price"), 0.0)
@@ -748,15 +764,38 @@ def build_ai_analysis_export(days: int, state_dir: str | Path, bot_version: str,
             "exit_version_tag": _client_version_tag(xo.get("client_order_id")),
             "entry_decision_nearest": entry_dec,
             "exit_decision_nearest": exit_dec,
+            "entry_decision_exact_match": entry_exact is not None,
+            "exit_decision_exact_match": exit_exact is not None,
             "entry_slippage_vs_decision_bps": round((ep/edp-1.0)*10000.0, 3) if ep>0 and edp>0 else None,
             "exit_slippage_vs_decision_bps": round((xp/xdp-1.0)*10000.0, 3) if xp>0 and xdp>0 else None,
         })
         enriched.append(row)
     trade_bars, bar_errors = _fetch_trade_bars(api, enriched, manifest, days)
+    evidence = read_evidence(state_dir, manifest.get("range_start_utc"), manifest.get("range_end_utc"))
+    path_sources = {}
+    for symbol in {str(t.get("symbol") or "").upper() for t in enriched}:
+        historical = trade_bars.get(symbol) or []
+        local = evidence["bars"].get(symbol) or []
+        combined = {str(b.get("t") or b.get("timestamp")): b for b in local}
+        combined.update({str(b.get("t") or b.get("timestamp")): b for b in historical})
+        trade_bars[symbol] = sorted(combined.values(), key=lambda b: str(b.get("t") or b.get("timestamp")))
+        path_sources[symbol] = {"historical_bars": len(historical), "local_bars": len(local),
+                                "combined_bars": len(combined)}
     for row in enriched:
         row["market_path"] = _trade_path_stats(row, trade_bars.get(str(row.get("symbol") or "").upper(), []))
+        risk_event = next((e for e in reversed(evidence["events"]) if e.get("kind") == "RISK_EXIT" and
+                           ((row.get("exit_order_id") and e["data"].get("order_id") == row["exit_order_id"]) or
+                            (row.get("exit_client_order_id") and e["data"].get("client_order_id") == row["exit_client_order_id"]))), None)
+        row["exit_risk_event_exact"] = risk_event
+        if risk_event and risk_event["data"].get("reason"):
+            row["exit_reason_inferred"] = risk_event["data"]["reason"]
     diagnostics = _trade_diagnostics(enriched, positions if isinstance(positions,list) else [], portfolio_rows, decisions, status, manifest)
     diagnostics["market_path_errors"] = bar_errors
+    diagnostics["path_data_coverage"] = path_sources
+    diagnostics["storage_health"] = storage_health(state_dir)
+    diagnostics["by_entry_version"] = {
+        version: _metric_block([t for t in enriched if (t.get("entry_version_tag") or "untagged") == version])
+        for version in sorted({t.get("entry_version_tag") or "untagged" for t in enriched})}
     shadow_rows = _shadow_rows(state_dir, manifest.get("range_start_utc"), manifest.get("range_end_utc"))
     shadow_summary: Dict[str, Any] = {}
     for model in sorted({str(r.get("model") or "") for r in shadow_rows if r.get("model")}):
@@ -798,11 +837,17 @@ def build_ai_analysis_export(days: int, state_dir: str | Path, bot_version: str,
         "control_snapshot": control,
         "execution_state": execution,
         "trade_plans": plans,
+        "runtime_events": evidence["events"],
+        "local_market_bars": evidence["bars"],
+        "audit_read_errors": evidence["errors"],
+        "market_path_note": "MFE/MAE use 1-minute bars, not tick paths; missing data remains null. Local fallback may have gaps.",
     }
     ai_manifest = dict(manifest)
     ai_manifest["export_schema"] = "tradingbot-ai-audit-v3"
     ai_manifest["single_upload_file"] = True
     ai_manifest["inside_zip"] = ["AI_ANALYSE.json"]
+    ai_manifest["build_id"] = status.get("build_id")
+    ai_manifest["server_started_at_utc"] = status.get("server_started_at_utc")
     payload["meta"] = ai_manifest
     out = io.BytesIO()
     with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=7) as zf:
