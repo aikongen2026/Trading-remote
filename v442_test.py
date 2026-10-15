@@ -12,8 +12,8 @@ def check(cond, msg):
     print('OK:', msg)
 
 cid=make_client_order_id('tbe-','STOCK','AAPL')
-check(cid.startswith('tbe-sv460-'), 'new client order ids include revision tag')
-check(trade_export._client_version_tag(cid)=='v460', 'revision tag can be recovered from client order id')
+check(cid.startswith('tbe-sv470-'), 'new client order ids include revision tag')
+check(trade_export._client_version_tag(cid)=='v470', 'revision tag can be recovered from client order id')
 
 legacy_files={
  '00_manifest.json': {'export_schema':'tradingbot-analysis-v1','bot_version':'4.4.2-ai-audit','range_start_utc':'2026-10-12T10:00:00Z','range_end_utc':'2026-10-12T11:00:00Z','days':1,'paper':True,'errors':[]},

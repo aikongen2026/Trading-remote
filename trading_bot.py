@@ -37,6 +37,8 @@ from profit_engine import ProfitEngine
 from execution_guard import ExecutionGuard
 from adaptive_edge import AdaptiveRouter, ShadowLab, dynamic_universe, sector_confirmation
 from runtime_audit import RuntimeAudit, EntryConfirmation, supervise_stocks, epoch
+from broker_history import BrokerHistory
+from state_storage import resolve_state_dir, health as backup_health
 
 try:
     import tkinter as tk
@@ -47,7 +49,7 @@ except Exception:
 
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-STATE_DIR = (os.getenv("TRADINGBOT_STATE_DIR") or HERE).strip() or HERE
+STATE_DIR = str(resolve_state_dir(HERE))
 os.makedirs(STATE_DIR, exist_ok=True)
 CONTROL_PATH = os.path.join(STATE_DIR, "control.json")
 STATUS_PATH = os.path.join(STATE_DIR, "status.json")
@@ -1504,6 +1506,8 @@ def main() -> None:
     trade_plans = load_trade_plans()
     execution_guard = ExecutionGuard(STATE_DIR)
     runtime_audit = RuntimeAudit(STATE_DIR)
+    broker_history = BrokerHistory(STATE_DIR)
+    broker_history.start(api, cfg)
     entry_confirmation = EntryConfirmation()
     soft_exit_since: Dict[str, Tuple[str, float]] = {}
     last_decision_snapshot_ts = 0.0
@@ -1656,6 +1660,10 @@ def main() -> None:
             now_api = time.time()
 
             future_map: Dict[Any, str] = {}
+            if broker_history.reconcile_needed.is_set():
+                broker_history.reconcile_needed.clear()
+                cached_positions["ts"] = 0.0
+                cached_orders["ts"] = 0.0
             with ThreadPoolExecutor(max_workers=5) as pool:
                 if (now_api - cached_account["ts"]) >= 5.0:
                     future_map[pool.submit(api.account)] = "account"
@@ -1719,6 +1727,7 @@ def main() -> None:
                 orders = [json_safe_order(o) for o in orders_raw]
 
             clk = cached_clock.get("value") or {}
+            execution_guard.reconcile_entries(api, orders)
             regular_market_open = bool(clk.get("is_open", False))
             allow_extended = bool(extended)
             stock_session = current_stock_session(regular_market_open, allow_extended)
@@ -2307,8 +2316,12 @@ def main() -> None:
                                 st["action"] = "WAIT_FRESH_BARS"
                             elif not runtime_audit.summary()["persistent"] and not cfg.paper:
                                 st["action"] = "WAIT_PERSISTENT_STORAGE"
+                            elif backup_health(STATE_DIR).get("configured") and not backup_health(STATE_DIR).get("restored"):
+                                st["action"] = "WAIT_HISTORY_RESTORE"
                             elif runtime_audit.last_error:
                                 st["action"] = "WAIT_MARKET_AUDIT"
+                            elif not broker_history.enabled:
+                                st["action"] = "WAIT_BROKER_ARCHIVE"
                             elif intelligence_enabled and (not intelligence.journal._enabled or intelligence.journal.last_error):
                                 st["action"] = "WAIT_AUDIT_LOG"
                             elif dynamic_universe_enabled and sym not in active_universe_set:
@@ -2369,9 +2382,11 @@ def main() -> None:
                                             continue
                                         tp_price = ref_price * (1.0 + float(profit_plan.take_profit_pct))
                                         stop_price = ref_price * (1.0 - float(profit_plan.stop_loss_pct))
+                                        execution_guard.block_entry("STOCK", sym, "entry_submitting", entry_cid)
                                         entry_response = api.submit_bracket_order(sym, qty, tp_price, stop_price, tif="day", client_order_id=entry_cid)
                                         broker_bracket = True
                                     else:
+                                        execution_guard.block_entry("STOCK", sym, "entry_submitting", entry_cid)
                                         entry_response = api.submit_order(sym, "buy", qty, tif="day", client_order_id=entry_cid)
                                 else:
                                     if not extended_session_open or not st.get("ask"):
@@ -2379,6 +2394,7 @@ def main() -> None:
                                         symbols_state[sym] = st
                                         continue
                                     buy_limit = float(st["ask"]) * (1.0 + extended_limit_buffer_bps / 10000.0)
+                                    execution_guard.block_entry("STOCK", sym, "entry_submitting", entry_cid)
                                     entry_response = api.submit_order(
                                         sym, "buy", qty, tif="day", order_type="limit",
                                         limit_price=buy_limit, extended_hours=True, client_order_id=entry_cid,
@@ -2571,6 +2587,7 @@ def main() -> None:
                                         intelligence=intel, strategy=crypto_strategy_mode, profile=activity_profile,
                                         account_equity=account_equity, base_crypto_notional=crypto_notional_usd,
                                         crypto_taker_fee_bps=crypto_taker_fee_bps,
+                                        crypto_min_net_edge_bps=crypto_min_net_edge_bps,
                                         crypto_slippage_bps=crypto_slippage_bps,
                                         max_crypto_notional_usd=max_crypto_notional_usd,
                                         crypto_max_position_pct_equity=crypto_max_position_pct_equity,
@@ -2599,7 +2616,9 @@ def main() -> None:
                                 symbols_state[sym] = st
                                 continue
 
-                            quote_is_stale = bool(isinstance(q, dict) and not quote_age_ok)
+                            quote_dt = parse_any_ts(st.get("quote_time")) if st.get("quote_time") else None
+                            quote_is_stale = not (quote_dt and st.get("bid") and st.get("ask") and quote_age_ok
+                                                  and -2 <= (utc_now()-quote_dt).total_seconds() <= max(quote_stale_sec, 30))
                             k = trade_plan_key("CRYPTO", sym)
                             saved_plan = trade_plans.get(k) if isinstance(trade_plans.get(k), dict) else {}
 
@@ -2609,7 +2628,7 @@ def main() -> None:
                                 pnl_pct = pct_change(avg_entry, live_price)
                                 st["debug"]["position_pnl_pct"] = round(pnl_pct, 6)
                                 if k not in position_seen_ts:
-                                    position_seen_ts[k] = now_crypto_ts
+                                    position_seen_ts[k] = epoch(saved_plan.get("entry_filled_at") or saved_plan.get("created_at")) or now_crypto_ts
                                 peak = max(position_peak_price.get(k, live_price), live_price)
                                 position_peak_price[k] = peak
                                 held_sec = max(0.0, now_crypto_ts - position_seen_ts.get(k, now_crypto_ts))
@@ -2718,7 +2737,15 @@ def main() -> None:
                                 st["debug"]["entry_confirmations"] = confirmations
                                 st["debug"]["entry_confirmations_required"] = crypto_entry_confirm_bars
 
-                                if intelligence_enabled and not bool(intel.get("entry_allowed")):
+                                if not broker_fresh:
+                                    st["action"] = "WAIT_BROKER_DATA"
+                                elif not broker_history.enabled:
+                                    st["action"] = "WAIT_BROKER_ARCHIVE"
+                                elif backup_health(STATE_DIR).get("configured") and not backup_health(STATE_DIR).get("restored"):
+                                    st["action"] = "WAIT_HISTORY_RESTORE"
+                                elif not runtime_audit.summary()["persistent"] and not cfg.paper:
+                                    st["action"] = "WAIT_PERSISTENT_STORAGE"
+                                elif intelligence_enabled and not bool(intel.get("entry_allowed")):
                                     st["action"] = f"WAIT_INTEL:{float(intel.get('score', 0)):.0f}"
                                 elif profit_engine_enabled and (profit_plan is None or not bool(profit_plan.allowed)):
                                     if profit_plan is None:
@@ -2748,6 +2775,7 @@ def main() -> None:
                                     notional = float(profit_plan.notional_usd) if profit_engine_enabled and profit_plan is not None else crypto_notional_usd
                                     from execution_guard import make_client_order_id as _make_cid
                                     entry_cid = _make_cid("tbe-", "CRYPTO", sym)
+                                    execution_guard.block_entry("CRYPTO", sym, "entry_submitting", entry_cid)
                                     api.submit_notional_order(sym, "buy", notional, tif="gtc", order_type="market", client_order_id=entry_cid)
                                     execution_guard.block_entry("CRYPTO", sym, "entry_submitted", entry_cid)
                                     plan_to_save = profit_plan.to_dict() if profit_plan is not None else {
@@ -2841,6 +2869,8 @@ def main() -> None:
                 "execution_guard": execution_guard.summary(),
                 "risk_supervision": supervision,
                 "audit_health": runtime_audit.summary(),
+                "broker_history": broker_history.summary(),
+                "storage_backup": backup_health(STATE_DIR),
                 "learning_health": {"enabled": intelligence.journal._enabled,
                                     "last_error": intelligence.journal.last_error,
                                     "last_write_utc": intelligence.journal.last_write},

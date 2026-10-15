@@ -300,6 +300,7 @@ class ProfitEngine:
         base_stock_qty: float = 1.0,
         base_crypto_notional: float = 100.0,
         crypto_taker_fee_bps: float = 25.0,
+        crypto_min_net_edge_bps: float = 20.0,
         stock_slippage_bps: float = 2.5,
         crypto_slippage_bps: float = 4.0,
         max_stock_notional_usd: float = 5000.0,
@@ -325,7 +326,7 @@ class ProfitEngine:
             tp = clamp(expected_move * 1.00, 0.0080, 0.0300)
             sl = clamp(expected_move * 0.62, 0.0045, 0.0150)
             cost_bps = max(0.0, spread_bps) + 2.0 * max(0.0, crypto_taker_fee_bps) + max(0.0, crypto_slippage_bps)
-            min_ev_bps = 18.0 if profile == "active" else 28.0
+            min_ev_bps = max(crypto_min_net_edge_bps, 18.0 if profile == "active" else 28.0)
             min_prob = 0.545 if profile == "active" else 0.565
             min_rr = 1.35
         else:
@@ -418,8 +419,12 @@ class ProfitEngine:
             vol_scale = 1.0
         if market == "CRYPTO":
             notional *= vol_scale
+            notional = min(notional, risk_sized * vol_scale, cap * vol_scale)
         else:
-            qty = math.floor(qty * vol_scale)
+            # Apply risk limits in dollars first, then round whole shares once.
+            # A one-share candidate may survive only if it fits BOTH reduced caps.
+            desired_scaled = max(1, math.floor(desired*vol_scale)) if vol_scale > 0 and desired >= 1 else 0
+            qty = math.floor(max(0, min(desired_scaled, max_qty_risk*vol_scale, max_qty_cap*vol_scale)))
             notional = qty * price
 
         allowed = True
@@ -438,7 +443,7 @@ class ProfitEngine:
             allowed = False; reasons.append("reward_risk")
         if market == "STOCK" and qty < 1:
             allowed = False; reasons.append("size")
-        if market == "CRYPTO" and notional < max(10.0, base_crypto_notional * 0.50):
+        if market == "CRYPTO" and notional < 10.0:
             allowed = False; reasons.append("size")
 
         trail_activate = clamp(tp * 0.55, sl * 0.65, tp * 0.85)

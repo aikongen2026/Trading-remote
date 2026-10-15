@@ -97,7 +97,7 @@ class RecoveryTests(unittest.TestCase):
         self.assertTrue(journal.last_write)
         with closing(sqlite3.connect(journal.path)) as db:
             version, raw = db.execute('SELECT bot_version,context_json FROM decisions').fetchone()
-        self.assertEqual(version, '4.6.0-audit-recovery')
+        self.assertEqual(version, trading_bot.runtime_bot_version())
         self.assertEqual(json.loads(raw)['strategy'], 'trend')
 
     def test_next_day_is_not_labelled_as_one_hour_outcome(self):
@@ -140,9 +140,9 @@ class RecoveryTests(unittest.TestCase):
         for n in range(15):
             self.assertFalse(gate.ready('MSFT', 'trend', True, n))
         self.assertTrue(gate.ready('MSFT', 'trend', True, 15))
-        self.assertFalse(gate.ready('MSFT', 'trend', True, 100))
-        self.assertFalse(gate.ready('MSFT', 'trend', False, 101))
-        self.assertFalse(gate.ready('MSFT', 'meanrev', True, 102))
+        self.assertFalse(gate.ready('MSFT', 'trend', True, 300))
+        self.assertFalse(gate.ready('MSFT', 'trend', False, 301))
+        self.assertFalse(gate.ready('MSFT', 'meanrev', True, 302))
 
     def test_render_writable_directory_is_not_assumed_persistent(self):
         with patch.dict(os.environ, {'RENDER':'true'}), patch('os.path.ismount', return_value=False):
@@ -177,6 +177,7 @@ class RecoveryTests(unittest.TestCase):
              patch.object(trading_bot, 'AlpacaRest', return_value=api), \
              patch.object(trading_bot, 'IntelligenceEngine', return_value=intel), \
              patch.object(trading_bot, 'ExecutionGuard', return_value=self.guard), \
+             patch('broker_history.BrokerHistory.start'), \
              patch.object(trading_bot, 'ensure_control_file', return_value=control), \
              patch('trading_bot.time.sleep', side_effect=KeyboardInterrupt), \
              patch('sys.stdout', new=io.StringIO()):

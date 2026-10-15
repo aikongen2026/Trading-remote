@@ -16,6 +16,8 @@ import re
 import sqlite3
 from contextlib import closing
 from runtime_audit import read_evidence, storage_health
+from broker_history import archived_evidence
+from state_storage import health as backup_health
 import time
 import zipfile
 from collections import Counter
@@ -108,11 +110,11 @@ def _rows_to_csv(rows: Iterable[Dict[str, Any]]) -> str:
     return sio.getvalue()
 
 
-def _fetch_orders(api: Any, since: datetime, max_records: int = 50000) -> List[Dict[str, Any]]:
+def _fetch_orders(api: Any, since: datetime, max_records: int = 50000, until: datetime | None = None) -> List[Dict[str, Any]]:
     """Page orders by timestamp window, independent of undocumented order-id cursors."""
     out: List[Dict[str, Any]] = []
     seen = set()
-    cursor_until = _now()
+    cursor_until = until or _now()
     for _ in range(240):
         params: Dict[str, Any] = {
             "status": "all", "limit": 500, "direction": "desc", "nested": "true",
@@ -127,7 +129,7 @@ def _fetch_orders(api: Any, since: datetime, max_records: int = 50000) -> List[D
             if not isinstance(row, dict):
                 continue
             dt = _parse_ts(row.get("submitted_at") or row.get("created_at"))
-            if dt is None or dt < since:
+            if dt is None or dt < since or dt > (until or cursor_until):
                 continue
             oid = str(row.get("id") or "")
             if oid and oid in seen:
@@ -138,15 +140,17 @@ def _fetch_orders(api: Any, since: datetime, max_records: int = 50000) -> List[D
             if oldest is None or dt < oldest:
                 oldest = dt
             if len(out) >= max_records:
-                return sorted(out, key=lambda x: str(x.get("submitted_at") or x.get("created_at") or ""), reverse=True)
+                raise RuntimeError("Order history incomplete: record limit reached")
         if len(page) < 500 or oldest is None:
             break
-        next_until = oldest - timedelta(microseconds=1)
+        next_until = oldest
         if next_until >= cursor_until:
-            break
+            raise RuntimeError("Order history incomplete: ambiguous timestamp boundary")
         cursor_until = next_until
         if not added and cursor_until <= since:
             break
+    else:
+        raise RuntimeError("Order history incomplete: page limit reached")
     return sorted(out, key=lambda x: str(x.get("submitted_at") or x.get("created_at") or ""), reverse=True)
 
 
@@ -171,19 +175,21 @@ def _fetch_activities(api: Any, since: datetime, until: datetime, max_records: i
                 continue
             if rid:
                 seen.add(rid)
-            dt = _parse_ts(row.get("transaction_time") or row.get("date") or row.get("created_at"))
+            dt = _parse_ts(row.get("transaction_time") or row.get("created_at") or row.get("date"))
             if dt is not None and not (since <= dt <= until):
                 continue
             out.append(row)
             if len(out) >= max_records:
-                return out
+                raise RuntimeError("Activity history incomplete: record limit reached")
         if len(page) < 100:
             break
         last = page[-1] if isinstance(page[-1], dict) else {}
         next_token = str(last.get("id") or "")
         if not next_token or next_token == token:
-            break
+            raise RuntimeError("Activity history incomplete: pagination stalled")
         token = next_token
+    else:
+        raise RuntimeError("Activity history incomplete: page limit reached")
     return out
 
 
@@ -215,7 +221,7 @@ def _read_json(path: Path, default: Any) -> Any:
         return default
 
 
-def _learning_rows(state_dir: Path, since: datetime) -> List[Dict[str, Any]]:
+def _learning_rows(state_dir: Path, since: datetime, until: datetime | None = None) -> List[Dict[str, Any]]:
     path = state_dir / "learning_v3.sqlite"
     if not path.exists():
         return []
@@ -225,7 +231,7 @@ def _learning_rows(state_dir: Path, since: datetime) -> List[Dict[str, Any]]:
             names = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             if "decisions" not in names:
                 return []
-            rows = db.execute("SELECT * FROM decisions WHERE ts >= ? ORDER BY ts ASC", (_iso(since),)).fetchall()
+            rows = db.execute("SELECT * FROM decisions WHERE julianday(ts) >= julianday(?) AND julianday(ts) <= julianday(?) ORDER BY julianday(ts) ASC", (_iso(since),_iso(until or _now()))).fetchall()
             return [dict(r) for r in rows]
     except Exception:
         return []
@@ -366,13 +372,25 @@ def build_analysis_export(days: int, state_dir: str | Path, bot_version: str, ap
     except Exception as exc:
         positions = []; errors.append(f"positions: {exc}")
     try:
-        orders = _fetch_orders(api, since)
+        orders = _fetch_orders(api, since, until=now)
     except Exception as exc:
         orders = []; errors.append(f"orders: {exc}")
     try:
         activities = _fetch_activities(api, since, now)
     except Exception as exc:
         activities = []; errors.append(f"activities: {exc}")
+    # Bracket exits may fill during this range although created before it.
+    known_ids=set(_flatten_order_map(orders))
+    missing_ids=sorted({str(a.get("order_id")) for a in activities if a.get("order_id")} - known_ids)
+    if len(missing_ids)>1000:
+        errors.append("Order detail lookup incomplete: over 1000 missing orders")
+    for oid in missing_ids[:1000]:
+        try:
+            order=api._req("GET", f"{api.cfg.trading_base}/v2/orders/{oid}")
+            if isinstance(order,dict) and order.get("id"): orders.append(order)
+            else: errors.append("Missing order detail: " + oid)
+        except Exception as exc:
+            errors.append(f"order_detail:{oid}:{type(exc).__name__}")
     try:
         history = api.portfolio_history(f"{days}D", "1H", continuous=True)
         if not isinstance(history, dict): history = {}
@@ -380,7 +398,7 @@ def build_analysis_export(days: int, state_dir: str | Path, bot_version: str, ap
         history = {}; errors.append(f"portfolio_history: {exc}")
 
     portfolio_rows = _portfolio_rows(history)
-    decisions = _learning_rows(state, since)
+    decisions = _learning_rows(state, since, now)
     status = _read_json(state / "status.json", {})
     control = _read_json(state / "control.json", {})
     execution_state = _read_json(state / "execution_state_v4_2.json", {})
@@ -680,7 +698,7 @@ def _shadow_rows(state_dir: str | Path, start_utc: Any, end_utc: Any) -> List[Di
             if not cols:
                 return []
             rows = db.execute(
-                "SELECT * FROM shadow_signals WHERE ts>=? AND ts<=? ORDER BY id", (start, end)
+                "SELECT * FROM shadow_signals WHERE julianday(ts)>=julianday(?) AND julianday(ts)<=julianday(?) ORDER BY id", (start, end)
             ).fetchall()
         return [dict(zip(cols, r)) for r in rows]
     except Exception:
@@ -718,6 +736,8 @@ def build_ai_analysis_export(days: int, state_dir: str | Path, bot_version: str,
     execution = j("12_execution_state.json", {})
     plans = j("13_trade_plans.json", {})
     decisions = _csv_payload_rows(extracted.get("09_bot_decisions.csv", b""))
+    cutoff = _parse_dt_any(manifest.get("range_end_utc"))
+    decisions = [d for d in decisions if (_parse_dt_any(d.get("ts")) is not None and _parse_dt_any(d["ts"]) <= cutoff)]
     fills = _csv_payload_rows(extracted.get("06_fills.csv", b""))
     fees = _csv_payload_rows(extracted.get("07_fees.csv", b""))
     portfolio_rows = _csv_payload_rows(extracted.get("08_portfolio_history.csv", b""))
@@ -793,10 +813,19 @@ def build_ai_analysis_export(days: int, state_dir: str | Path, bot_version: str,
     diagnostics["market_path_errors"] = bar_errors
     diagnostics["path_data_coverage"] = path_sources
     diagnostics["storage_health"] = storage_health(state_dir)
+    diagnostics["storage_backup"] = backup_health(state_dir)
+    diagnostics["broker_history"] = status.get("broker_history", {})
+    diagnostics["api_history_complete"] = not bool(manifest.get("errors"))
+    usd_fees = sum(_num(f.get("net_amount")) for f in fees if str(f.get("currency") or "").upper()=="USD")
+    diagnostics["recorded_costs"] = {"usd_fee_cashflows":round(usd_fees,6),
+        "gross_plus_recorded_usd_fee_cashflows":round(sum(_num(t.get("gross_pnl_usd")) for t in enriched)+usd_fees,6),
+        "non_usd_fee_rows":sum(1 for f in fees if str(f.get("currency") or "").upper()!="USD"),
+        "note":"Account fee posting period may differ from trade period. Non-USD fees are not converted or assumed zero."}
     diagnostics["by_entry_version"] = {
         version: _metric_block([t for t in enriched if (t.get("entry_version_tag") or "untagged") == version])
         for version in sorted({t.get("entry_version_tag") or "untagged" for t in enriched})}
     shadow_rows = _shadow_rows(state_dir, manifest.get("range_start_utc"), manifest.get("range_end_utc"))
+    shadow_rows = [r for r in shadow_rows if _parse_dt_any(r.get("ts")) and _parse_dt_any(r["ts"]) <= cutoff]
     shadow_summary: Dict[str, Any] = {}
     for model in sorted({str(r.get("model") or "") for r in shadow_rows if r.get("model")}):
         vals = [_num(r.get("outcome_15m")) for r in shadow_rows if str(r.get("model") or "") == model and r.get("outcome_15m") is not None]
@@ -840,6 +869,8 @@ def build_ai_analysis_export(days: int, state_dir: str | Path, bot_version: str,
         "runtime_events": evidence["events"],
         "local_market_bars": evidence["bars"],
         "audit_read_errors": evidence["errors"],
+        "broker_archive": archived_evidence(state_dir,manifest.get("range_start_utc"),manifest.get("range_end_utc")),
+        "model_limitations": "P(up) is a directional model, not a validated probability of TP before SL. EV is hypothetical; time/signal exits may differ.",
         "market_path_note": "MFE/MAE use 1-minute bars, not tick paths; missing data remains null. Local fallback may have gaps.",
     }
     ai_manifest = dict(manifest)

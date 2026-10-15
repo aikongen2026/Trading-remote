@@ -201,7 +201,9 @@ class EntryConfirmation:
             self.candidates.pop(symbol, None)
             return False
         prior = self.candidates.get(symbol)
-        if not prior or prior[0] != strategy or now-prior[2] > 5:
+        # Confirmation means repeated fresh observations, not a fast CPU/network.
+        # Invalid quotes/signals reset explicitly through eligible=False.
+        if not prior or prior[0] != strategy or now-prior[2] > max(180, confirm_sec*3):
             self.candidates[symbol] = (strategy, now, now)
             return confirm_sec <= 0
         self.candidates[symbol] = (strategy, prior[1], now)

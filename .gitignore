@@ -13,3 +13,7 @@ learning_v3.sqlite*
 status.json
 tradingbot.env
 trade_plans_v4.json
+runtime_audit.sqlite*
+broker_history.sqlite*
+execution_state_v4_2.json
+storage_backup_health.json

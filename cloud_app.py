@@ -147,8 +147,12 @@ def initialise_state() -> None:
 
 
 def main() -> None:
+    from state_storage import StateBackup
+    backup = StateBackup(trading_bot.STATE_DIR)
+    backup.restore()  # Restore evidence before constructing any learning database.
     initialise_state()
     start_engine()
+    backup.start()
     threading.Thread(target=watchdog, name="engine-watchdog", daemon=True).start()
     host = "0.0.0.0"
     port = int(os.getenv("PORT", "10000"))

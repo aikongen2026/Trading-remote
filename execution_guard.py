@@ -149,6 +149,9 @@ class ExecutionGuard:
         cur = self.state["entry_latches"].get(k)
         if isinstance(cur, dict) and cur.get("blocked"):
             if not client_order_id or cur.get("client_order_id") == client_order_id:
+                if client_order_id and cur.get("reason") != reason:
+                    cur["reason"] = reason
+                    self._save()
                 return
         self.state["entry_latches"][k] = {
             "blocked": True,
@@ -160,8 +163,33 @@ class ExecutionGuard:
 
     def rearm_entry(self, market: str, symbol: str, reason: str = "signal_reset") -> None:
         k = self.key(market, symbol)
+        if (self.state["entry_latches"].get(k) or {}).get("reason") == "entry_submitting":
+            return  # A signal reset is not evidence that a timed-out buy was rejected.
         if k in self.state["entry_latches"]:
             self.state["entry_latches"].pop(k, None)
+            self._save()
+
+    def reconcile_entries(self, api, orders):
+        for k, row in list(self.state["entry_latches"].items()):
+            if row.get("reason") != "entry_submitting":
+                continue
+            cid = str(row.get("client_order_id") or "")
+            found = find_order(orders, client_order_id=cid)
+            if not found and time.time()-float(row.get("last_probe",0)) >= 10:
+                row["last_probe"] = time.time()
+                try:
+                    found = api.get_order_by_client_order_id(cid)
+                    if found is None:
+                        row["not_found_checks"] = int(row.get("not_found_checks",0))+1
+                except Exception:
+                    row["not_found_checks"] = 0
+            if found:
+                row["reason"] = "entry_submitted"
+            # Unknown submissions stay blocked until the broker confirms an order
+            # or repeated successful lookups prove it absent after a grace period.
+            age = time.time()-datetime.fromisoformat(row["blocked_at"]).timestamp()
+            if not found and row.get("not_found_checks",0) >= 3 and age >= 60:
+                self.state["entry_latches"].pop(k,None)
             self._save()
 
     # ----- exit intent -----

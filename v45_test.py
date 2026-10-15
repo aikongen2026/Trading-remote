@@ -82,5 +82,5 @@ with tempfile.TemporaryDirectory() as td:
 
 # Revision tag survives into broker client_order_id.
 cid=__import__('execution_guard').make_client_order_id('tbe-','STOCK','ABC')
-check('v460' in cid,'new orders carry current revision tag')
+check('v470' in cid,'new orders carry current revision tag')
 print('V4.5 TEST PASSED')
