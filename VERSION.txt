@@ -1,1 +1,1 @@
-4.7.0-broker-history
+4.8.2-persistent-edge-v2
