@@ -193,18 +193,79 @@ def supervise_stocks(api, positions, orders, plans, guard, control, clock, audit
 
 
 class EntryConfirmation:
+    """Two-stage confirmation for stock entries.
+
+    A candidate must survive for confirm_sec *and* avoid deteriorating while it
+    waits. This is deliberately lightweight: it confirms price progress and
+    rejects strongly negative micro/relative/sector context without inventing a
+    second independent trading strategy.
+    """
+
     def __init__(self):
         self.candidates = {}
 
-    def ready(self, symbol, strategy, eligible, now, confirm_sec=15):
+    def ready(
+        self,
+        symbol,
+        strategy,
+        eligible,
+        now,
+        confirm_sec=20,
+        *,
+        price=None,
+        min_progress_bps=1.0,
+        micro=0.0,
+        relative=0.0,
+        sector_ok=True,
+    ):
         if not eligible:
             self.candidates.pop(symbol, None)
             return False
+
+        try:
+            px = float(price or 0.0)
+        except Exception:
+            px = 0.0
+        try:
+            micro_v = float(micro or 0.0)
+        except Exception:
+            micro_v = 0.0
+        try:
+            relative_v = float(relative or 0.0)
+        except Exception:
+            relative_v = 0.0
+
         prior = self.candidates.get(symbol)
-        # Confirmation means repeated fresh observations, not a fast CPU/network.
-        # Invalid quotes/signals reset explicitly through eligible=False.
-        if not prior or prior[0] != strategy or now-prior[2] > max(180, confirm_sec*3):
-            self.candidates[symbol] = (strategy, now, now)
-            return confirm_sec <= 0
-        self.candidates[symbol] = (strategy, prior[1], now)
-        return now-prior[1] >= confirm_sec
+        stale_after = max(180.0, float(confirm_sec) * 3.0)
+        if not prior or prior.get("strategy") != strategy or now - float(prior.get("last_seen", now)) > stale_after:
+            self.candidates[symbol] = {
+                "strategy": strategy,
+                "first_seen": now,
+                "last_seen": now,
+                "first_price": px,
+            }
+            return float(confirm_sec) <= 0.0
+
+        prior["last_seen"] = now
+        first_price = float(prior.get("first_price") or px or 0.0)
+        age = max(0.0, now - float(prior.get("first_seen", now)))
+        if age < float(confirm_sec):
+            return False
+
+        # Trend/scalp/event entries should show at least a tiny amount of price
+        # follow-through. Mean reversion only requires that the candidate has
+        # stopped deteriorating.
+        progress_bps = 0.0
+        if first_price > 0 and px > 0:
+            progress_bps = (px / first_price - 1.0) * 10000.0
+        required = 0.0 if str(strategy).lower() == "meanrev" else float(min_progress_bps)
+
+        context_ok = bool(sector_ok) and micro_v >= -4.0 and relative_v >= -5.0
+        if not context_ok or progress_bps < required:
+            # Keep the candidate alive briefly, but move the reference forward
+            # so a later genuine confirmation can still pass.
+            if px > 0:
+                prior["first_price"] = px
+            prior["first_seen"] = now
+            return False
+        return True
