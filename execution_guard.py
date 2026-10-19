@@ -120,6 +120,39 @@ def make_client_order_id(prefix: str, market: str, symbol: str) -> str:
     return f"{prefix}{m}{tag}-{clean}-{uuid.uuid4().hex[:14]}"[:48]
 
 
+def make_entry_client_order_id(
+    symbol: str,
+    *,
+    strategy: str = "scalp",
+    score: float = 0.0,
+    p_tp: float = 0.0,
+    ev_bps: float = 0.0,
+    global_risk: float = 0.0,
+) -> str:
+    """Create a broker-persistent audit fingerprint for stock entries.
+
+    The ID contains only compact non-secret decision metadata. It survives a
+    Render restart because Alpaca stores it with the order.
+    """
+    clean = re.sub(r"[^A-Z0-9]", "", str(symbol or "").upper())[:8] or "SYM"
+    strat = {
+        "trend": "t", "meanrev": "m", "event": "e", "scalp": "s",
+        "cross": "c", "hype": "h",
+    }.get(str(strategy or "").lower(), "x")
+    try:
+        raw_ver = Path(__file__).with_name("VERSION.txt").read_text(encoding="utf-8", errors="ignore").strip()
+        nums = re.findall(r"\d+", raw_ver)[:3]
+        tag = "v" + "".join(nums) if nums else "v0"
+    except Exception:
+        tag = "v0"
+    sc = max(0, min(99, int(round(float(score or 0.0)))))
+    pp = max(0, min(99, int(round(float(p_tp or 0.0) * 100.0))))
+    ev = max(-99, min(99, int(round(float(ev_bps or 0.0)))))
+    evs = ("p" if ev >= 0 else "n") + f"{abs(ev):02d}"
+    rk = max(0, min(9, int(round(float(global_risk or 0.0) / 10.0))))
+    return f"tbe-s{tag}-{clean}-{strat}{sc:02d}b{pp:02d}{evs}r{rk}-{uuid.uuid4().hex[:6]}"[:48]
+
+
 class ExecutionGuard:
     def __init__(self, state_dir: str) -> None:
         self.path = os.path.join(state_dir, "execution_state_v4_2.json")
