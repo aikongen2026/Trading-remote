@@ -118,6 +118,7 @@ class TradePlan:
     symbol: str
     score: float
     probability_up: float
+    probability_tp_before_sl: float
     calibration_samples: float
     expected_move_pct: float
     take_profit_pct: float
@@ -136,6 +137,7 @@ class TradePlan:
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
         d["probability_up_pct"] = round(self.probability_up * 100.0, 2)
+        d["probability_tp_before_sl_pct"] = round(self.probability_tp_before_sl * 100.0, 2)
         return d
 
 
@@ -376,7 +378,25 @@ class ProfitEngine:
                 min_ev_bps += 2.0; min_prob += 0.005
         p_up = clamp(p_up, 0.40, 0.78)
 
-        ev_bps = p_up * (tp * 10000.0) - (1.0 - p_up) * (sl * 10000.0) - cost_bps
+        # V4.8.2: directional P(up) is not the same question as whether the
+        # planned take-profit is reached before the planned stop-loss. Start
+        # from the neutral two-barrier hit probability and tilt it only
+        # moderately with the calibrated directional model.
+        barrier_prior = sl / max(tp + sl, 1e-9)
+        directional_tilt = (p_up - 0.50) * (0.90 if market == "STOCK" else 0.75)
+        p_tp_before_sl = clamp(barrier_prior + directional_tilt, 0.18, 0.82)
+
+        # A candidate must clear its own break-even probability after estimated
+        # round-trip friction. This makes the gate adapt automatically when
+        # spread/slippage or the chosen TP/SL geometry changes.
+        breakeven_p = clamp(
+            ((sl * 10000.0) + cost_bps) / max((tp + sl) * 10000.0, 1e-9),
+            0.0, 0.95,
+        )
+        min_p_tp = max(breakeven_p + (0.025 if profile == "active" else 0.045),
+                       0.42 if market == "STOCK" else 0.45)
+
+        ev_bps = p_tp_before_sl * (tp * 10000.0) - (1.0 - p_tp_before_sl) * (sl * 10000.0) - cost_bps
         rr = tp / max(sl, 1e-9)
 
         # Volatility-managed sizing: wider stop / higher volatility -> smaller position.
@@ -436,7 +456,9 @@ class ProfitEngine:
         if market == "STOCK" and risk >= 90:
             allowed = False; reasons.append("extreme_global_risk")
         if p_up < min_prob:
-            allowed = False; reasons.append("probability")
+            allowed = False; reasons.append("direction_probability")
+        if p_tp_before_sl < min_p_tp:
+            allowed = False; reasons.append("tp_before_sl")
         if ev_bps < min_ev_bps:
             allowed = False; reasons.append("negative_ev")
         if rr < min_rr:
@@ -457,6 +479,7 @@ class ProfitEngine:
             symbol=symbol,
             score=round(score, 2),
             probability_up=round(p_up, 6),
+            probability_tp_before_sl=round(p_tp_before_sl, 6),
             calibration_samples=round(samples, 2),
             expected_move_pct=round(expected_move, 6),
             take_profit_pct=round(tp, 6),
