@@ -76,7 +76,7 @@ def acquire_single_instance_socket() -> socket.socket:
 
 
 DEFAULT_CONTROL: Dict[str, Any] = {
-    "config_version": 7,
+    "config_version": 8,
     "paused": True,
     "kill": False,
     "armed": False,
@@ -160,10 +160,13 @@ DEFAULT_CONTROL: Dict[str, Any] = {
     # V4.4 profit/stability controls derived from the 7-day execution review.
     "stock_entry_cutoff_min": 15,
     "stock_flatten_before_close_min": 5,
-    "stock_entry_confirm_sec": 15,
+    "stock_entry_confirm_sec": 20,
+    "stock_entry_min_progress_bps": 1.0,
     "stock_loss_streak_window_sec": 1800,
     "stock_loss_streak_count": 2,
     "stock_loss_streak_cooldown_sec": 1800,
+    "stock_group_loss_streak_count": 3,
+    "soft_exit_consensus_min": 2,
     "decision_log_interval_sec": 60,
     # V4.5 adaptive edge: all enabled by default, but challengers are shadow-only.
     "adaptive_router_enabled": True,
@@ -1227,6 +1230,7 @@ def intelligence_with_plan(intel: Dict[str, Any], plan: Dict[str, Any]) -> Dict[
         return out
     out.update({
         "probability_up": plan.get("probability_up"),
+        "probability_tp_before_sl": plan.get("probability_tp_before_sl"),
         "expected_value_bps": plan.get("expected_value_bps"),
         "take_profit_pct": plan.get("take_profit_pct"),
         "stop_loss_pct": plan.get("stop_loss_pct"),
@@ -1255,6 +1259,8 @@ def intelligence_from_status(st: Dict[str, Any]) -> Dict[str, Any]:
         "global_risk": dbg.get("global_risk"),
         "reason": dbg.get("intel_reason") or dbg.get("profit_plan_reason") or "periodic_snapshot",
         "probability_up": p_raw,
+        "probability_tp_before_sl": (float(dbg.get("p_tp_before_sl_pct")) / 100.0
+                                      if dbg.get("p_tp_before_sl_pct") is not None else None),
         "expected_value_bps": dbg.get("ev_bps"),
         "take_profit_pct": dbg.get("active_tp_pct", dbg.get("dynamic_tp_pct")),
         "stop_loss_pct": dbg.get("active_sl_pct", dbg.get("dynamic_sl_pct")),
@@ -1343,6 +1349,29 @@ def recent_filled_stop_count(orders: List[Dict[str, Any]], symbol: str, window_s
     for o in flatten_orders(orders or []):
         try:
             if symbol_key(str(o.get("symbol") or "")) != want:
+                continue
+            if str(o.get("side") or "").lower() != "sell":
+                continue
+            if str(o.get("type") or o.get("order_type") or "").lower() not in {"stop", "stop_limit"}:
+                continue
+            if str(o.get("status") or "").lower() != "filled":
+                continue
+            dt = parse_any_ts(o.get("filled_at") or o.get("updated_at"))
+            if dt is not None and (now - dt).total_seconds() <= max(1, int(window_sec)):
+                count += 1
+        except Exception:
+            continue
+    return count
+
+
+def recent_group_stop_count(orders: List[Dict[str, Any]], group: str, window_sec: int) -> int:
+    """Count recent filled broker stop exits across a market group."""
+    now = utc_now()
+    count = 0
+    for o in flatten_orders(orders or []):
+        try:
+            sym = str(o.get("symbol") or "").upper()
+            if not sym or "/" in sym or group_for_symbol(sym) != group:
                 continue
             if str(o.get("side") or "").lower() != "sell":
                 continue
@@ -1585,6 +1614,9 @@ def main() -> None:
             crypto_taker_fee_bps = max(0.0, float(control.get("crypto_taker_fee_bps", 25.0) or 0.0))
             crypto_min_net_edge_bps = max(0.0, float(control.get("crypto_min_net_edge_bps", 20.0) or 0.0))
             crypto_entry_confirm_bars = max(1, int(control.get("crypto_entry_confirm_bars", 2) or 1))
+            stock_entry_min_progress_bps = max(0.0, float(control.get("stock_entry_min_progress_bps", 1.0) or 0.0))
+            stock_group_loss_streak_count = max(1, int(control.get("stock_group_loss_streak_count", 3) or 3))
+            soft_exit_consensus_min = max(1, int(control.get("soft_exit_consensus_min", 2) or 2))
 
             intelligence_enabled = bool(control.get("intelligence_enabled", True))
             activity_profile = str(control.get("activity_profile", "active")).strip().lower()
@@ -2039,6 +2071,7 @@ def main() -> None:
                                 pd = profit_plan.to_dict()
                                 st["debug"].update({
                                     "prob_up_pct": pd.get("probability_up_pct"),
+                                    "p_tp_before_sl_pct": pd.get("probability_tp_before_sl_pct"),
                                     "ev_bps": pd.get("expected_value_bps"),
                                     "dynamic_tp_pct": pd.get("take_profit_pct"),
                                     "dynamic_sl_pct": pd.get("stop_loss_pct"),
@@ -2207,8 +2240,24 @@ def main() -> None:
                             elif not exit_reason and sig < 0:
                                 soft_reason = "SIGNAL_FLIP"
 
-                            # Soft strategy exits are confirmed for a short period to avoid 2-3 second
-                            # buy/sell churn. Hard TP/SL/trailing/max-hold remain immediate.
+                            # V4.8.2: a soft exit needs independent confirmation. The last
+                            # analysis showed several losing market exits that recovered soon after,
+                            # so one flipped indicator is no longer enough to cancel broker protection.
+                            if soft_reason and not exit_reason:
+                                _sector_exit = intel.get("sector_confirmation") or {}
+                                _exit_votes = 0
+                                _exit_votes += 1 if bool(intel.get("exit_bias")) else 0
+                                _exit_votes += 1 if sig < 0 else 0
+                                _exit_votes += 1 if float(intel.get("micro") or 0.0) <= -3.0 else 0
+                                _exit_votes += 1 if float(intel.get("relative") or 0.0) <= -3.0 else 0
+                                _exit_votes += 1 if (not bool(_sector_exit.get("ok", True)) or float(_sector_exit.get("score") or 0.0) <= -2.0) else 0
+                                st["debug"]["soft_exit_votes"] = _exit_votes
+                                if _exit_votes < soft_exit_consensus_min:
+                                    st["debug"]["soft_exit_suppressed"] = soft_reason
+                                    soft_reason = ""
+
+                            # Soft strategy exits are confirmed for a short period to avoid churn.
+                            # Hard TP/SL/trailing/max-hold remain immediate.
                             soft_key = f"STOCK:{sym}"
                             if soft_reason and not exit_reason:
                                 prior = soft_exit_since.get(soft_key)
@@ -2304,8 +2353,16 @@ def main() -> None:
                         last_bar_epoch = epoch((bars_cache.get_bars(sym)[-1] if bars_cache.get_bars(sym) else {}).get("t"))
                         bar_fresh = last_bar_epoch is not None and -2 <= now_ts-last_bar_epoch <= max(180, timeframe_to_seconds(timeframe)*3)
                         candidate_ok = candidate_ok and bar_fresh and broker_fresh and not paused and armed and not kill
-                        confirmed = entry_confirmation.ready(sym, effective_strategy, candidate_ok, now_ts,
-                                                             float(control.get("stock_entry_confirm_sec", 15)))
+                        _sector_ctx = intel.get("sector_confirmation") or {}
+                        confirmed = entry_confirmation.ready(
+                            sym, effective_strategy, candidate_ok, now_ts,
+                            float(control.get("stock_entry_confirm_sec", 20)),
+                            price=st.get("price"),
+                            min_progress_bps=stock_entry_min_progress_bps,
+                            micro=float(intel.get("micro") or 0.0),
+                            relative=float(intel.get("relative") or 0.0),
+                            sector_ok=bool(_sector_ctx.get("ok", True)) or effective_strategy == "meanrev",
+                        )
                         st["debug"]["entry_confirmed"] = confirmed
 
                         if sig > 0 and st["pos_qty"] <= 0:
@@ -2334,7 +2391,8 @@ def main() -> None:
                                 if profit_plan is None:
                                     st["action"] = "WAIT_EDGE"
                                 else:
-                                    st["action"] = f"WAIT_EDGE:{profit_plan.probability_up*100:.0f}%/{profit_plan.expected_value_bps:+.0f}bp"
+                                    _p_gate = getattr(profit_plan, "probability_tp_before_sl", profit_plan.probability_up)
+                                    st["action"] = f"WAIT_EDGE:{_p_gate*100:.0f}%/{profit_plan.expected_value_bps:+.0f}bp"
                             elif (not cfg.paper and profit_engine_enabled and profit_plan is not None
                                   and not allow_unvalidated_live and profit_plan.calibration_samples < min_live_calibration_samples):
                                 st["action"] = f"WAIT_VALIDATION:{profit_plan.calibration_samples:.0f}/{min_live_calibration_samples:.0f}"
@@ -2350,6 +2408,8 @@ def main() -> None:
                                 st["action"] = "OPEN_ORDER"
                             elif recent_filled_stop_count(orders, sym, stock_loss_streak_window_sec) >= stock_loss_streak_count:
                                 st["action"] = f"LOSS_COOLDOWN:{stock_loss_streak_cooldown_sec//60}m"
+                            elif recent_group_stop_count(orders, current_group, stock_loss_streak_window_sec) >= stock_group_loss_streak_count:
+                                st["action"] = f"GROUP_LOSS_COOLDOWN:{current_group}"
                             elif now_ts - last_trade_ts.get(sym, 0) < cooldown_sec:
                                 st["action"] = "COOLDOWN"
                             elif max_spread_usd > 0 and st["spread"] is not None and float(st["spread"]) > max_spread_usd:
@@ -2371,8 +2431,14 @@ def main() -> None:
                                 broker_bracket = False
                                 # Use a unique client id for audit/reconciliation, while the persistent latch
                                 # prevents a filled/quickly-closed trade from re-entering on the same stale signal.
-                                from execution_guard import make_client_order_id as _make_cid
-                                entry_cid = _make_cid("tbe-", "STOCK", sym)
+                                from execution_guard import make_entry_client_order_id as _make_entry_cid
+                                _p_tp = getattr(profit_plan, "probability_tp_before_sl", 0.0) if profit_plan is not None else 0.0
+                                _ev = getattr(profit_plan, "expected_value_bps", 0.0) if profit_plan is not None else 0.0
+                                entry_cid = _make_entry_cid(
+                                    sym, strategy=effective_strategy, score=float(intel.get("score") or 0.0),
+                                    p_tp=float(_p_tp or 0.0), ev_bps=float(_ev or 0.0),
+                                    global_risk=float(intel.get("global_risk") or 0.0),
+                                )
                                 if regular_market_open:
                                     if broker_bracket_enabled and profit_engine_enabled and profit_plan is not None:
                                         ref_price = float(st.get("ask") or st.get("price") or 0)
