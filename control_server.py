@@ -1545,9 +1545,345 @@ HTML = r"""\n<!doctype html>
     @media(prefers-reduced-motion:reduce){
       *,*:before,*:after{animation:none!important;transition:none!important}
     }
-  </style>
+  
+    /* ===== FORSLAG 4 EXACT DESKTOP V4 - VISUAL/LAYOUT ONLY ===== */
+    html,body{
+      width:100vw !important;
+      max-width:none !important;
+      min-width:0 !important;
+    }
+    body{
+      overflow-x:hidden !important;
+      background:
+        radial-gradient(1050px 460px at 57% -40px,rgba(0,145,255,.34),transparent 63%),
+        radial-gradient(720px 390px at 100% 18%,rgba(0,104,255,.13),transparent 65%),
+        radial-gradient(760px 520px at 0% 68%,rgba(0,205,255,.08),transparent 66%),
+        linear-gradient(180deg,#010812 0%,#010914 49%,#01050b 100%) !important;
+    }
+    body:before{
+      opacity:.52 !important;
+      background-size:38px 38px !important;
+    }
+
+    /* The previous pseudo rail is disabled; this is a real layout element. */
+    .wrap::after{display:none !important}
+    .hudRailActual{
+      position:fixed;
+      z-index:60;
+      left:14px;
+      top:78px;
+      bottom:22px;
+      width:52px;
+      display:flex;
+      flex-direction:column;
+      align-items:center;
+      gap:12px;
+      padding:12px 7px;
+      color:#78eaff;
+      font-size:19px;
+      font-weight:950;
+      border:1px solid rgba(32,171,244,.88);
+      border-radius:15px;
+      background:
+        linear-gradient(180deg,rgba(4,28,53,.985),rgba(2,15,30,.985)),
+        radial-gradient(circle at 50% 0%,rgba(0,164,255,.20),transparent 38%);
+      box-shadow:
+        inset 0 0 30px rgba(9,161,255,.08),
+        0 0 0 1px rgba(62,214,255,.08),
+        0 0 26px rgba(0,145,255,.22),
+        0 18px 42px rgba(0,0,0,.35);
+      text-shadow:0 0 14px rgba(76,224,255,.82);
+      pointer-events:none;
+    }
+    .hudRailActual>div{
+      width:36px;
+      height:36px;
+      flex:0 0 36px;
+      display:grid;
+      place-items:center;
+      border:1px solid transparent;
+      border-radius:10px;
+      opacity:.85;
+    }
+    .hudRailActual .hudHome{
+      border-color:#34cfff;
+      color:#d2fbff;
+      background:linear-gradient(180deg,#0d72a9,#07456d);
+      box-shadow:
+        inset 0 0 13px rgba(91,235,255,.13),
+        0 0 15px rgba(35,207,255,.35);
+      opacity:1;
+    }
+
+    .wrap{
+      box-sizing:border-box !important;
+      width:calc(100vw - 76px) !important;
+      max-width:none !important;
+      min-width:0 !important;
+      margin:0 0 0 76px !important;
+      padding:14px 18px 42px 8px !important;
+    }
+
+    .topbar{
+      position:relative !important;
+      min-height:100px !important;
+      margin:0 0 9px !important;
+      padding:12px 20px 15px !important;
+      border:1px solid rgba(35,170,246,.90) !important;
+      border-radius:13px !important;
+      background:
+        linear-gradient(180deg,rgba(2,15,30,.985),rgba(2,23,44,.945)),
+        radial-gradient(720px 180px at 58% 0%,rgba(0,139,255,.20),transparent 72%) !important;
+      box-shadow:
+        inset 0 1px 0 rgba(123,231,255,.08),
+        inset 0 -1px 0 rgba(61,201,255,.18),
+        0 0 0 1px rgba(0,102,190,.08),
+        0 0 28px rgba(0,139,255,.18),
+        0 18px 40px rgba(0,0,0,.28) !important;
+      overflow:hidden !important;
+    }
+    .topbar:before{
+      display:none !important;
+    }
+    .topbar:after{
+      display:none !important;
+    }
+    .brand{z-index:5 !important}
+    .navActions{z-index:6 !important}
+
+    .headerHeroArt{
+      position:absolute;
+      z-index:2;
+      inset:0 250px 0 390px;
+      overflow:hidden;
+      pointer-events:none;
+      opacity:.96;
+    }
+    .heroGrid{
+      position:absolute;
+      inset:0;
+      opacity:.48;
+      background-image:
+        linear-gradient(rgba(43,177,255,.08) 1px,transparent 1px),
+        linear-gradient(90deg,rgba(43,177,255,.07) 1px,transparent 1px);
+      background-size:29px 29px;
+      mask-image:linear-gradient(90deg,transparent,#000 18%,#000 82%,transparent);
+    }
+    .heroGlobe{
+      position:absolute;
+      width:245px;
+      height:245px;
+      left:46%;
+      top:-120px;
+      transform:translateX(-50%);
+      border-radius:50%;
+      border:1px solid rgba(79,218,255,.42);
+      background:
+        repeating-radial-gradient(circle at 50% 50%,transparent 0 23px,rgba(71,208,255,.10) 24px 25px),
+        repeating-linear-gradient(0deg,transparent 0 22px,rgba(67,194,255,.085) 23px 24px),
+        repeating-linear-gradient(90deg,transparent 0 30px,rgba(67,194,255,.075) 31px 32px),
+        radial-gradient(circle at 42% 38%,rgba(38,180,255,.18),rgba(4,55,98,.06) 58%,transparent 72%);
+      box-shadow:
+        inset 0 0 45px rgba(42,186,255,.13),
+        0 0 44px rgba(0,145,255,.24),
+        0 0 78px rgba(0,105,255,.13);
+    }
+    .heroChart{
+      position:absolute;
+      left:0;
+      right:0;
+      bottom:2px;
+      width:100%;
+      height:74px;
+      fill:none;
+      stroke:#31cfff;
+      stroke-width:2;
+      vector-effect:non-scaling-stroke;
+      filter:drop-shadow(0 0 6px rgba(49,207,255,.86));
+      opacity:.74;
+    }
+    .headerTagline{
+      position:absolute;
+      z-index:5;
+      right:14px;
+      top:10px;
+      color:#3dc9ff;
+      font-size:8px;
+      font-weight:900;
+      line-height:1.45;
+      letter-spacing:.08em;
+      text-align:left;
+      opacity:.85;
+      text-shadow:0 0 12px rgba(31,185,255,.48);
+      pointer-events:none;
+      transform:translateX(70px);
+    }
+    .navActions{
+      margin-right:88px;
+    }
+
+    .brandMark{
+      width:64px !important;
+      height:64px !important;
+      border-radius:17px !important;
+      border-color:#36d2ff !important;
+      box-shadow:
+        inset 0 0 32px rgba(78,234,255,.18),
+        0 0 0 1px rgba(52,210,255,.16),
+        0 0 17px rgba(17,193,255,.42),
+        0 0 45px rgba(0,102,255,.22) !important;
+    }
+    h1{font-size:31px !important}
+
+    .kpiStrip{
+      grid-template-columns:repeat(7,minmax(0,1fr)) !important;
+      gap:8px !important;
+      margin:8px 0 9px !important;
+    }
+    .kpiCard{
+      min-height:79px !important;
+      padding:12px 13px !important;
+      border:1px solid rgba(29,169,243,.96) !important;
+      border-radius:10px !important;
+      background:
+        linear-gradient(145deg,rgba(5,38,69,.99),rgba(2,18,36,.97)),
+        radial-gradient(210px 90px at 100% 0%,rgba(39,179,255,.24),transparent 68%) !important;
+      box-shadow:
+        inset 0 1px 0 rgba(149,237,255,.055),
+        inset 0 0 30px rgba(0,134,225,.06),
+        0 0 0 1px rgba(26,156,229,.08),
+        0 0 18px rgba(0,144,255,.16),
+        0 10px 25px rgba(0,0,0,.22) !important;
+    }
+    .kpiCard:after{
+      opacity:.92 !important;
+      width:112px !important;
+      height:63px !important;
+      right:-3px !important;
+      bottom:-11px !important;
+      filter:drop-shadow(0 0 7px rgba(39,213,255,.82)) !important;
+    }
+    .kpiValue{font-size:18px !important}
+
+    .mainGrid{
+      grid-template-columns:minmax(0,1.10fr) minmax(0,.99fr) 305px !important;
+      gap:8px !important;
+      align-items:stretch !important;
+    }
+    .controlCard,.statusCard{min-width:0 !important}
+    .sideRail{min-width:0 !important;gap:8px !important}
+
+    .card,.sideCard,.tableCard,.ordersDetails{
+      border:1px solid rgba(28,166,242,.98) !important;
+      border-radius:11px !important;
+      background:
+        linear-gradient(150deg,rgba(5,32,58,.99),rgba(2,15,31,.985)),
+        radial-gradient(480px 195px at 100% 0%,rgba(0,140,255,.12),transparent 65%) !important;
+      box-shadow:
+        inset 0 1px 0 rgba(125,232,255,.06),
+        inset 0 0 44px rgba(0,140,235,.05),
+        0 0 0 1px rgba(39,185,255,.065),
+        0 0 20px rgba(0,143,255,.18),
+        0 18px 38px rgba(0,0,0,.34) !important;
+    }
+    .card:hover,.sideCard:hover{
+      border-color:#4cddff !important;
+      box-shadow:
+        inset 0 1px 0 rgba(132,239,255,.09),
+        0 0 0 1px rgba(85,225,255,.18),
+        0 0 28px rgba(37,201,255,.27),
+        0 0 54px rgba(0,108,255,.13),
+        0 20px 42px rgba(0,0,0,.35) !important;
+    }
+
+    .heroControls .start{
+      box-shadow:
+        inset 0 1px 0 rgba(255,255,255,.12),
+        0 0 20px rgba(18,240,171,.39),
+        0 0 39px rgba(0,142,255,.10) !important;
+    }
+    .heroControls .stop{
+      box-shadow:
+        inset 0 1px 0 rgba(255,255,255,.09),
+        0 0 20px rgba(255,180,38,.34),
+        0 0 37px rgba(0,112,255,.07) !important;
+    }
+    .heroControls .danger{
+      box-shadow:
+        inset 0 1px 0 rgba(255,255,255,.09),
+        0 0 22px rgba(255,48,99,.35),
+        0 0 40px rgba(0,117,255,.08) !important;
+    }
+    .btn.active{
+      border-color:#42edff !important;
+      box-shadow:
+        inset 0 0 0 1px rgba(79,234,255,.42),
+        0 0 18px rgba(44,224,255,.46),
+        0 0 36px rgba(0,113,255,.16) !important;
+    }
+    .banner.good{
+      box-shadow:
+        inset 0 0 21px rgba(58,255,200,.055),
+        0 0 19px rgba(24,220,162,.24),
+        0 0 35px rgba(0,133,255,.09) !important;
+    }
+
+    .tableCard{
+      margin-top:8px !important;
+      border-color:#20b3f7 !important;
+      box-shadow:
+        inset 0 1px 0 rgba(106,229,255,.06),
+        inset 0 0 38px rgba(0,127,219,.05),
+        0 0 0 1px rgba(43,197,255,.08),
+        0 0 24px rgba(0,139,255,.18),
+        0 20px 43px rgba(0,0,0,.32) !important;
+    }
+    .tableHead{
+      background:
+        linear-gradient(180deg,rgba(7,56,94,.91),rgba(3,29,52,.64)),
+        radial-gradient(420px 90px at 40% 0%,rgba(0,148,255,.11),transparent 72%) !important;
+    }
+    th{
+      background:linear-gradient(180deg,#07304e,#041d32) !important;
+    }
+
+    @media(max-width:1080px){
+      .hudRailActual{display:none}
+      .wrap{
+        width:100vw !important;
+        margin-left:0 !important;
+        padding:10px 10px 30px !important;
+      }
+      .headerHeroArt,.headerTagline{display:none}
+      .navActions{margin-right:0}
+      .mainGrid{
+        grid-template-columns:minmax(0,1.05fr) minmax(0,.95fr) !important;
+      }
+      .sideRail{
+        grid-column:1/-1 !important;
+        grid-template-columns:1fr 1fr !important;
+      }
+      .kpiStrip{grid-template-columns:repeat(4,1fr) !important}
+    }
+    @media(max-width:760px){
+      .mainGrid{grid-template-columns:1fr !important}
+      .sideRail{grid-column:auto !important;grid-template-columns:1fr !important}
+      .kpiStrip{grid-template-columns:repeat(2,1fr) !important}
+    }
+</style>
 </head>
-<body><div class="wrap">
+<body>
+<!-- FORSLAG4-ACTUAL-HUD -->
+<aside class="hudRailActual" aria-hidden="true">
+  <div class="hudHome">⌂</div>
+  <div>↗</div>
+  <div>▥</div>
+  <div>⚙</div>
+  <div>◉</div>
+  <div>▤</div>
+  <div>↗</div>
+</aside>
+<div class="wrap">
   <header class="topbar">
     <div class="brand">
       <div class="brandMark">AI</div>
@@ -1557,6 +1893,14 @@ HTML = r"""\n<!doctype html>
         <div class="sub metaLine"><span class="metaDot" id="auditSummary">Kontrollerer historikk…</span></div>
       </div>
     </div>
+    <div class="headerHeroArt" aria-hidden="true">
+      <div class="heroGrid"></div>
+      <div class="heroGlobe"></div>
+      <svg class="heroChart" viewBox="0 0 560 100" preserveAspectRatio="none">
+        <polyline points="0,82 48,70 85,76 124,45 168,58 216,29 255,54 306,34 354,62 401,39 448,51 503,24 560,38"/>
+      </svg>
+    </div>
+    <div class="headerTagline" aria-hidden="true">ALGORITMER<br>MARKEDER<br>24/7<br>UTEN GRENSER</div>
     <div class="navActions">
       <div class="systemBox"><span id="liveDot" class="dot"></span><div><div class="sysLabel">SYSTEM</div><div id="liveText" class="sysValue">KOBLER TIL</div></div></div>
       <button id="installBtn" class="btn ghost" onclick="installApp()">⇩ Installer app</button>
