@@ -807,6 +807,9 @@ class AlpacaEdgeV49:
                                 "take_profit_pct": intelligence.get("take_profit_pct"),
                                 "stop_loss_pct": intelligence.get("stop_loss_pct"),
                                 "client_order_id": intelligence.get("client_order_id"),
+                                "entry_client_order_id": intelligence.get("entry_client_order_id"),
+                                "group_id": intelligence.get("group_id"),
+                                "group_role": intelligence.get("group_role"),
                                 "order_id": intelligence.get("order_id"),
                                 "event_type": intelligence.get("event_type"),
                                 "exit_reason": intelligence.get("exit_reason"),
@@ -840,12 +843,12 @@ class AlpacaEdgeV49:
         self.corporate.start()
         self.session.start()
         self.overnight.start()
-        self.recorder.event("EDGE_START", "", {"version": "4.9.0-alpaca-edge-24x7", "paper": self.paper})
+        self.recorder.event("EDGE_START", "", {"version": "4.10.0-smart-edge", "paper": self.paper})
         threading.Thread(target=self._status_loop, name="alpaca-edge-status-v49", daemon=True).start()
 
     def health(self) -> Dict[str, Any]:
         return {
-            "version": "4.9.0-alpaca-edge-24x7",
+            "version": "4.10.0-smart-edge",
             "started": self.started,
             "api_budget": self.budget.summary(),
             "news_stream": dict(self.news.health) if self.news else {"state": "NOT_STARTED"},
