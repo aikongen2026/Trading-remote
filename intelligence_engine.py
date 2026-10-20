@@ -1355,11 +1355,38 @@ class IntelligenceEngine:
         rel = self.relative_strength(symbol, closes) if market.upper() == "STOCK" else 0.0
         micro, micro_debug = self.microstructure_score(symbol, market)
         news = self.news_score(symbol)
+        # V4.10 data-confidence: external news/macro sources are useful context, but
+        # a timeout/reconnect must never be interpreted as "neutral news".
+        # Down-weight only the external-data contribution while technical/price
+        # signals continue to operate normally.
+        source_keys = ("alpaca_news", "gdelt", "fed", "bls", "eia", "sec", "market_regime", "daily_factors")
+        source_weights = {
+            "alpaca_news": 1.25, "gdelt": 0.75, "fed": 0.75, "bls": 0.75,
+            "eia": 0.50, "sec": 0.75, "market_regime": 1.25, "daily_factors": 1.00,
+        }
+        def _source_quality(v: Any) -> float:
+            s = str(v or "").upper()
+            if s.startswith(("OK", "CONNECTED", "REST_OK")):
+                return 1.0
+            if s.startswith(("REST_FALLBACK", "REST_ONLY", "RECONNECTING")):
+                return 0.55
+            if s.startswith("STARTING"):
+                return 0.35
+            return 0.0
+        quality_den = sum(source_weights[k] for k in source_keys)
+        quality_num = sum(source_weights[k] * _source_quality(self.source_health.get(k)) for k in source_keys)
+        data_confidence = clamp(quality_num / max(quality_den, 1e-9), 0.0, 1.0)
+        external_scale = 0.25 + 0.75 * data_confidence
+
         long_factor = self.daily_factor_score.get(normalize_symbol(symbol), 0.0) if market.upper() == "STOCK" else 0.0
         regime_component = (self.regime_score - 50.0) * 0.20 if market.upper() == "STOCK" else 0.0
         if market.upper() == "CRYPTO":
             # crypto is more sensitive to risk appetite, but cap the effect.
             regime_component = (self.regime_score - 50.0) * 0.10
+        # Only external-data terms are damped when sources are degraded.
+        news *= external_scale
+        long_factor *= external_scale
+        regime_component *= max(0.45, external_scale)
         risk_penalty = max(0.0, self.global_risk - 55.0) * 0.22
         g = group_for_symbol(symbol)
         if g in {"ENERGY", "DEFENSE"} and self.global_risk > 65:
@@ -1376,11 +1403,14 @@ class IntelligenceEngine:
         reason = (
             f"score={composite:.1f} tech={tech:+.1f} mtf={mtf:+.1f} rel={rel:+.1f} micro={micro:+.1f} "
             f"news={news:+.1f} long={long_factor:+.1f} regime={self.regime_score:.1f} risk={self.global_risk:.1f} "
-            f"crash_guard={self.momentum_crash_risk} event_blackout={self.event_blackout} risk_veto={hard_risk_veto}"
+            f"data_conf={data_confidence:.2f} crash_guard={self.momentum_crash_risk} "
+            f"event_blackout={self.event_blackout} risk_veto={hard_risk_veto}"
         )
         return {
             "score": round(composite, 1),
             "confidence": round(clamp(confidence, 0, 100), 1),
+            "data_confidence": round(data_confidence * 100.0, 1),
+            "data_confidence_raw": round(data_confidence, 4),
             "entry_allowed": bool(signal > 0 and composite >= entry_threshold and not self.event_blackout and not hard_risk_veto),
             "exit_bias": bool(composite <= exit_threshold),
             "entry_threshold": entry_threshold,
