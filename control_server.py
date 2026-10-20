@@ -1870,6 +1870,441 @@ HTML = r"""\n<!doctype html>
       .sideRail{grid-column:auto !important;grid-template-columns:1fr !important}
       .kpiStrip{grid-template-columns:repeat(2,1fr) !important}
     }
+
+    /* ===== FORSLAG 4 SINGLE PAGE V5 - VISUAL/LAYOUT ONLY ===== */
+    /* Desktop target: one-screen 16:9 dashboard, same functions and DOM. */
+    @media (min-width:1081px) and (min-height:720px){
+      html,body{
+        width:100% !important;
+        height:100% !important;
+        min-height:100% !important;
+        overflow:hidden !important;
+      }
+      body{
+        background:
+          radial-gradient(1200px 470px at 55% -70px,rgba(0,146,255,.36),transparent 64%),
+          radial-gradient(820px 470px at 100% 18%,rgba(0,107,255,.15),transparent 66%),
+          radial-gradient(800px 540px at 0% 70%,rgba(0,211,255,.09),transparent 66%),
+          linear-gradient(180deg,#010914 0%,#010a14 51%,#01060c 100%) !important;
+      }
+      body:before{
+        opacity:.55 !important;
+        background-size:36px 36px !important;
+      }
+
+      .hudRailActual{
+        left:8px !important;
+        top:10px !important;
+        bottom:10px !important;
+        width:46px !important;
+        padding:10px 5px !important;
+        gap:8px !important;
+        border-color:#29cfff !important;
+        background:
+          linear-gradient(180deg,rgba(4,31,58,.99),rgba(2,15,31,.99)),
+          radial-gradient(circle at 50% 0%,rgba(0,166,255,.22),transparent 38%) !important;
+        box-shadow:
+          inset 0 0 30px rgba(17,177,255,.10),
+          0 0 0 1px rgba(77,224,255,.10),
+          0 0 24px rgba(0,151,255,.32) !important;
+      }
+      .hudRailActual>div{
+        width:34px !important;
+        height:34px !important;
+        flex-basis:34px !important;
+        font-size:16px !important;
+      }
+
+      .wrap{
+        width:calc(100vw - 60px) !important;
+        height:100vh !important;
+        max-width:none !important;
+        min-width:0 !important;
+        margin:0 0 0 58px !important;
+        padding:8px 10px 8px 4px !important;
+        display:grid !important;
+        grid-template-rows:
+          minmax(82px,9.5vh)
+          minmax(70px,8vh)
+          minmax(330px,43vh)
+          minmax(210px,1fr)
+          30px !important;
+        gap:7px !important;
+        overflow:hidden !important;
+      }
+
+      .topbar{
+        height:100% !important;
+        min-height:0 !important;
+        margin:0 !important;
+        padding:9px 15px 10px !important;
+        border:1px solid #1ebcff !important;
+        border-radius:12px !important;
+        background:
+          linear-gradient(180deg,rgba(2,16,32,.99),rgba(2,25,47,.96)),
+          radial-gradient(760px 180px at 57% 0%,rgba(0,143,255,.24),transparent 72%) !important;
+        box-shadow:
+          inset 0 1px 0 rgba(137,239,255,.10),
+          inset 0 -1px 0 rgba(70,210,255,.20),
+          0 0 0 1px rgba(0,111,204,.08),
+          0 0 28px rgba(0,151,255,.26),
+          0 15px 32px rgba(0,0,0,.30) !important;
+      }
+      .headerHeroArt{
+        inset:0 230px 0 340px !important;
+      }
+      .heroGlobe{
+        width:270px !important;
+        height:270px !important;
+        top:-138px !important;
+        border-color:rgba(87,229,255,.56) !important;
+        box-shadow:
+          inset 0 0 52px rgba(52,199,255,.16),
+          0 0 52px rgba(0,158,255,.35),
+          0 0 90px rgba(0,107,255,.18) !important;
+      }
+      .heroChart{
+        height:78px !important;
+        stroke:#38d8ff !important;
+        stroke-width:2.2 !important;
+        filter:drop-shadow(0 0 7px rgba(56,216,255,.96)) !important;
+        opacity:.90 !important;
+      }
+      .heroGrid{opacity:.62 !important}
+      .headerTagline{display:none !important}
+      .navActions{margin-right:0 !important}
+      .brandMark{
+        width:55px !important;
+        height:55px !important;
+        border-color:#42dfff !important;
+        box-shadow:
+          inset 0 0 30px rgba(83,242,255,.22),
+          0 0 0 1px rgba(70,226,255,.18),
+          0 0 18px rgba(31,211,255,.52),
+          0 0 42px rgba(0,111,255,.24) !important;
+      }
+      h1{font-size:28px !important}
+      .sub{font-size:11px !important}
+      .revBadge{font-size:10px !important;padding:4px 8px !important}
+
+      #installHelp{display:none !important}
+
+      .kpiStrip{
+        height:100% !important;
+        margin:0 !important;
+        gap:7px !important;
+        grid-template-columns:repeat(7,minmax(0,1fr)) !important;
+      }
+      .kpiCard{
+        height:100% !important;
+        min-height:0 !important;
+        padding:9px 11px !important;
+        border:1px solid #1ebfff !important;
+        border-radius:10px !important;
+        background:
+          linear-gradient(145deg,rgba(5,40,73,.995),rgba(2,20,39,.985)),
+          radial-gradient(220px 92px at 100% 0%,rgba(43,190,255,.28),transparent 70%) !important;
+        box-shadow:
+          inset 0 1px 0 rgba(163,243,255,.07),
+          inset 0 0 30px rgba(0,141,233,.08),
+          0 0 0 1px rgba(33,180,255,.10),
+          0 0 16px rgba(0,156,255,.24) !important;
+      }
+      .kpiCard:after{
+        width:100px !important;
+        height:55px !important;
+        bottom:-10px !important;
+        right:-2px !important;
+        opacity:1 !important;
+        filter:drop-shadow(0 0 7px rgba(40,221,255,.96)) !important;
+      }
+      .kpiHead{font-size:9px !important}
+      .kpiIcon{
+        width:30px !important;
+        height:30px !important;
+        border-color:#2cc9f5 !important;
+        box-shadow:0 0 13px rgba(30,208,255,.24) !important;
+      }
+      .kpiValue{
+        font-size:18px !important;
+        margin-top:4px !important;
+      }
+
+      .mainGrid{
+        height:100% !important;
+        min-height:0 !important;
+        margin:0 !important;
+        grid-template-columns:minmax(0,1.08fr) minmax(0,1.02fr) 300px !important;
+        gap:7px !important;
+        align-items:stretch !important;
+      }
+      .mainGrid>.card,
+      .sideRail,
+      .sideCard{
+        min-height:0 !important;
+      }
+      .sideRail{
+        display:grid !important;
+        grid-template-columns:1fr !important;
+        grid-template-rows:1fr 1fr !important;
+        gap:7px !important;
+      }
+      .card,.sideCard,.tableCard,.ordersDetails{
+        border:1px solid #1ec4ff !important;
+        border-radius:11px !important;
+        background:
+          linear-gradient(150deg,rgba(5,34,61,.995),rgba(2,16,32,.99)),
+          radial-gradient(520px 210px at 100% 0%,rgba(0,147,255,.15),transparent 65%) !important;
+        box-shadow:
+          inset 0 1px 0 rgba(137,240,255,.07),
+          inset 0 0 44px rgba(0,146,240,.06),
+          0 0 0 1px rgba(46,198,255,.08),
+          0 0 20px rgba(0,156,255,.23),
+          0 14px 30px rgba(0,0,0,.32) !important;
+      }
+      .card{
+        padding:12px !important;
+        overflow:hidden !important;
+      }
+      .cardHead{
+        margin-bottom:9px !important;
+      }
+      .card h2{font-size:19px !important}
+      .card h3{
+        margin:9px 0 6px !important;
+        font-size:10px !important;
+      }
+      .cardHint{
+        margin-left:40px !important;
+        margin-top:-8px !important;
+        margin-bottom:9px !important;
+        font-size:10px !important;
+      }
+      .titleIcon{
+        width:32px !important;
+        height:32px !important;
+        border-color:#38d9ff !important;
+        background:linear-gradient(180deg,#08729b,#07354f) !important;
+        box-shadow:
+          inset 0 0 15px rgba(87,244,255,.15),
+          0 0 15px rgba(28,211,255,.35) !important;
+      }
+
+      .heroControls{
+        gap:7px !important;
+      }
+      .heroControls .btn{
+        min-height:50px !important;
+        padding:7px 10px !important;
+        font-size:14px !important;
+      }
+      .heroControls .start{
+        border-color:#35ffc3 !important;
+        box-shadow:
+          inset 0 1px 0 rgba(255,255,255,.13),
+          0 0 20px rgba(25,246,178,.46),
+          0 0 36px rgba(0,142,255,.10) !important;
+      }
+      .heroControls .stop{
+        border-color:#ffc536 !important;
+        box-shadow:
+          inset 0 1px 0 rgba(255,255,255,.10),
+          0 0 20px rgba(255,188,45,.40),
+          0 0 34px rgba(0,112,255,.07) !important;
+      }
+      .heroControls .danger{
+        min-height:47px !important;
+        border-color:#ff5b7e !important;
+        box-shadow:
+          inset 0 1px 0 rgba(255,255,255,.10),
+          0 0 22px rgba(255,55,104,.42),
+          0 0 40px rgba(0,117,255,.08) !important;
+      }
+      .heroSub{font-size:9px !important}
+
+      .segmented{gap:6px !important}
+      .segmented .btn{
+        min-height:38px !important;
+        padding:7px 8px !important;
+        font-size:12px !important;
+      }
+      .segmented.two{grid-template-columns:repeat(2,minmax(0,150px)) !important}
+      .strategyRow{
+        grid-template-columns:minmax(0,1fr) 165px !important;
+        gap:6px !important;
+      }
+      input,select,.strategyRow .btn{
+        min-height:36px !important;
+        padding:7px 10px !important;
+        font-size:12px !important;
+      }
+      details.utility{
+        margin-top:8px !important;
+      }
+      .utility summary{
+        padding:8px 10px !important;
+        font-size:10px !important;
+      }
+
+      .banner{
+        padding:9px 11px !important;
+        margin-bottom:8px !important;
+        font-size:12px !important;
+      }
+      .banner.good{
+        border-color:#29e1ad !important;
+        box-shadow:
+          inset 0 0 21px rgba(58,255,200,.07),
+          0 0 20px rgba(24,229,169,.34),
+          0 0 35px rgba(0,144,255,.11) !important;
+      }
+      .statusGrid{
+        gap:0 10px !important;
+      }
+      .statusItem{
+        grid-template-columns:105px minmax(0,1fr) !important;
+        min-height:28px !important;
+        font-size:10px !important;
+      }
+      .statusItem.wide{
+        grid-template-columns:105px minmax(0,1fr) !important;
+      }
+      .pill{font-size:8px !important;padding:2px 6px !important}
+      .statusNotes{
+        margin-top:7px !important;
+        padding-top:6px !important;
+      }
+
+      .sideCard{
+        padding:10px !important;
+        overflow:hidden !important;
+      }
+      .sideTitle{
+        font-size:14px !important;
+        margin-bottom:6px !important;
+      }
+      .profitRow{
+        padding:8px 0 !important;
+      }
+      .profitValue{font-size:15px !important}
+      .profitFoot{font-size:8px !important}
+      .exportBox select{margin:3px 0 6px !important}
+      .exportBtn{
+        min-height:37px !important;
+        font-size:11px !important;
+        border-color:#4ce9ff !important;
+        box-shadow:
+          inset 0 1px 0 rgba(255,255,255,.13),
+          0 0 20px rgba(40,216,255,.42),
+          0 0 35px rgba(0,115,255,.14) !important;
+      }
+
+      .tableCard{
+        height:100% !important;
+        min-height:0 !important;
+        margin:0 !important;
+        display:grid !important;
+        grid-template-rows:auto minmax(0,1fr) !important;
+        overflow:hidden !important;
+        border-color:#26cfff !important;
+        box-shadow:
+          inset 0 1px 0 rgba(111,234,255,.07),
+          inset 0 0 40px rgba(0,135,226,.06),
+          0 0 0 1px rgba(48,208,255,.09),
+          0 0 25px rgba(0,152,255,.26),
+          0 18px 36px rgba(0,0,0,.32) !important;
+      }
+      .tableHead{
+        padding:9px 12px 7px !important;
+        background:
+          linear-gradient(180deg,rgba(7,63,104,.95),rgba(3,31,55,.70)),
+          radial-gradient(460px 100px at 40% 0%,rgba(0,154,255,.14),transparent 72%) !important;
+      }
+      .tableTitle .titleIcon{
+        width:31px !important;
+        height:31px !important;
+      }
+      .tableTitle h2{font-size:18px !important}
+      .filterArea{gap:5px !important}
+      .filterBtn{
+        padding:6px 9px !important;
+        font-size:9px !important;
+      }
+      .searchBox{
+        width:165px !important;
+        min-height:30px !important;
+        padding:5px 8px !important;
+        font-size:9px !important;
+      }
+      .filterBtn.active{
+        border-color:#46efff !important;
+        box-shadow:
+          inset 0 0 11px rgba(63,234,255,.11),
+          0 0 15px rgba(45,226,255,.48),
+          0 0 28px rgba(0,113,255,.14) !important;
+      }
+
+      .tableCard>.tableWrap{
+        min-height:0 !important;
+        height:100% !important;
+        overflow:auto !important;
+        scrollbar-width:thin;
+        scrollbar-color:#159edd #031321;
+      }
+      .symbolsTable{
+        min-width:1000px !important;
+        font-size:10px !important;
+      }
+      .symbolsTable th,
+      .symbolsTable td{
+        padding:5px 8px !important;
+        line-height:1.08 !important;
+      }
+      .symbolsTable th{
+        font-size:8px !important;
+        background:linear-gradient(180deg,#073656,#041f35) !important;
+      }
+      .symbolsTable tbody tr:nth-child(even){
+        background:rgba(5,36,62,.36) !important;
+      }
+      .symbolsTable tbody tr:hover{
+        background:linear-gradient(90deg,rgba(10,101,154,.54),rgba(4,42,72,.24)) !important;
+        box-shadow:
+          inset 3px 0 0 rgba(65,229,255,.70),
+          0 0 18px rgba(0,135,255,.12) !important;
+      }
+      .marketBadge{font-size:7px !important;padding:2px 5px !important}
+
+      .ordersDetails{
+        height:30px !important;
+        min-height:30px !important;
+        margin:0 !important;
+        overflow:hidden !important;
+        border-color:#1599dd !important;
+      }
+      .ordersDetails summary{
+        height:29px !important;
+        padding:7px 11px !important;
+        font-size:9px !important;
+      }
+      .ordersDetails[open]{
+        position:fixed !important;
+        z-index:100 !important;
+        left:70px !important;
+        right:12px !important;
+        bottom:10px !important;
+        height:min(360px,45vh) !important;
+        background:#031523 !important;
+        box-shadow:
+          0 0 0 1px rgba(49,205,255,.12),
+          0 0 32px rgba(0,155,255,.30),
+          0 20px 55px rgba(0,0,0,.55) !important;
+      }
+      .ordersDetails[open] .tableWrap{
+        height:calc(100% - 72px) !important;
+        overflow:auto !important;
+      }
+    }
 </style>
 </head>
 <body>
