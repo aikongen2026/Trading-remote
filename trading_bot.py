@@ -76,7 +76,7 @@ def acquire_single_instance_socket() -> socket.socket:
 
 
 DEFAULT_CONTROL: Dict[str, Any] = {
-    "config_version": 8,
+    "config_version": 9,
     "paused": True,
     "kill": False,
     "armed": False,
@@ -167,6 +167,13 @@ DEFAULT_CONTROL: Dict[str, Any] = {
     "stock_loss_streak_cooldown_sec": 1800,
     "stock_group_loss_streak_count": 3,
     "soft_exit_consensus_min": 2,
+    # V4.10: broker bracket remains primary protection. Soft discretionary exits
+    # need stronger evidence before the bot cancels that protection.
+    "bracket_soft_exit_min_hold_sec": 300,
+    "bracket_soft_exit_consensus_min": 3,
+    # Block fresh entries around high-impact corporate actions from Alpaca Market Data.
+    "corporate_actions_enabled": True,
+    "corporate_action_lookahead_days": 3,
     "decision_log_interval_sec": 60,
     # V4.5 adaptive edge: all enabled by default, but challengers are shadow-only.
     "adaptive_router_enabled": True,
@@ -225,6 +232,13 @@ def ensure_control_file() -> Dict[str, Any]:
         for _k in ("stock_entry_cutoff_min", "stock_flatten_before_close_min", "stock_loss_streak_window_sec",
                    "stock_loss_streak_count", "stock_loss_streak_cooldown_sec", "decision_log_interval_sec",
                    "dynamic_universe_top_n", "shadow_log_interval_sec"):
+            if _k not in control:
+                control[_k] = DEFAULT_CONTROL[_k]
+                changed = True
+
+    if old_version < 9:
+        for _k in ("bracket_soft_exit_min_hold_sec", "bracket_soft_exit_consensus_min",
+                   "corporate_actions_enabled", "corporate_action_lookahead_days"):
             if _k not in control:
                 control[_k] = DEFAULT_CONTROL[_k]
                 changed = True
@@ -708,6 +722,28 @@ class AlpacaRest:
         )
         bars = (data or {}).get("bars") or {}
         return bars if isinstance(bars, dict) else {}
+
+    def corporate_actions(
+        self, symbols: List[str], start_date: str, end_date: str,
+        types: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """High-impact corporate actions from Alpaca Market Data v1.
+
+        This is read-only market data used only as an entry safety filter.
+        """
+        if not symbols:
+            return {}
+        params: Dict[str, Any] = {
+            "symbols": ",".join(sorted({str(s).upper() for s in symbols if str(s).strip()})),
+            "start": start_date,
+            "end": end_date,
+            "cas_region": "us",
+            "limit": 1000,
+        }
+        if types:
+            params["types"] = ",".join(types)
+        data = self._req("GET", f"{self.cfg.data_base}/v1/corporate-actions", params=params)
+        return data if isinstance(data, dict) else {}
 
     def bars(
         self,
@@ -1522,6 +1558,7 @@ def main() -> None:
     cached_orders: Dict[str, Any] = {"value": [], "ts": 0.0}
     cached_open_orders: Dict[str, Any] = {"value": [], "ts": 0.0}
     cached_profit_history: Dict[str, Any] = {"value": {}, "ts": 0.0}
+    cached_corporate_actions: Dict[str, Any] = {"value": {}, "ts": 0.0}
 
     # Intelligence + research-edge profit engine run behind the existing simple dashboard.
     # Intelligence scores context; ProfitEngine converts it into cost/volatility/EV-aware plans.
@@ -1617,6 +1654,16 @@ def main() -> None:
             stock_entry_min_progress_bps = max(0.0, float(control.get("stock_entry_min_progress_bps", 1.0) or 0.0))
             stock_group_loss_streak_count = max(1, int(control.get("stock_group_loss_streak_count", 3) or 3))
             soft_exit_consensus_min = max(1, int(control.get("soft_exit_consensus_min", 2) or 2))
+            bracket_soft_exit_min_hold_sec = max(
+                soft_exit_min_hold_sec, int(control.get("bracket_soft_exit_min_hold_sec", 300) or 300)
+            )
+            bracket_soft_exit_consensus_min = max(
+                soft_exit_consensus_min, int(control.get("bracket_soft_exit_consensus_min", 3) or 3)
+            )
+            corporate_actions_enabled = bool(control.get("corporate_actions_enabled", True))
+            corporate_action_lookahead_days = max(
+                0, min(14, int(control.get("corporate_action_lookahead_days", 3) or 3))
+            )
 
             intelligence_enabled = bool(control.get("intelligence_enabled", True))
             activity_profile = str(control.get("activity_profile", "active")).strip().lower()
@@ -1708,6 +1755,18 @@ def main() -> None:
                     future_map[pool.submit(api.clock)] = "clock"
                 if (now_api - cached_profit_history["ts"]) >= 60.0:
                     future_map[pool.submit(api.portfolio_history, "7D", "1H")] = "profit_history"
+                if corporate_actions_enabled and stocks and (now_api - cached_corporate_actions["ts"]) >= 900.0:
+                    _ca_start = eastern_now().date()
+                    _ca_end = _ca_start + timedelta(days=corporate_action_lookahead_days)
+                    _ca_types = [
+                        "reverse_split", "forward_split", "unit_split", "spin_off",
+                        "cash_merger", "stock_merger", "stock_and_cash_merger",
+                        "redemption", "name_change", "worthless_removal",
+                        "rights_distribution", "reorganization", "partial_call",
+                    ]
+                    future_map[
+                        pool.submit(api.corporate_actions, stocks, _ca_start.isoformat(), _ca_end.isoformat(), _ca_types)
+                    ] = "corporate_actions"
 
                 results: Dict[str, Any] = {}
                 for fut in as_completed(future_map):
@@ -1739,6 +1798,32 @@ def main() -> None:
             if isinstance(results.get("profit_history"), dict):
                 cached_profit_history["value"] = results["profit_history"]
                 cached_profit_history["ts"] = time.time()
+            if isinstance(results.get("corporate_actions"), dict):
+                cached_corporate_actions["value"] = results["corporate_actions"]
+                cached_corporate_actions["ts"] = time.time()
+
+            # Flatten Alpaca's type-specific corporate-action arrays into a symbol map.
+            corporate_action_blocked: Dict[str, List[str]] = {}
+            if corporate_actions_enabled:
+                _ca_payload = cached_corporate_actions.get("value") or {}
+                if isinstance(_ca_payload, dict):
+                    for _ca_type, _rows in _ca_payload.items():
+                        if not isinstance(_rows, list):
+                            continue
+                        for _row in _rows:
+                            if not isinstance(_row, dict):
+                                continue
+                            _sym = str(
+                                _row.get("symbol") or _row.get("old_symbol") or
+                                _row.get("from_symbol") or _row.get("initiating_symbol") or ""
+                            ).upper().strip()
+                            if not _sym:
+                                continue
+                            _desc = str(_ca_type).replace("_", " ").upper()
+                            _date = str(_row.get("process_date") or _row.get("ex_date") or _row.get("record_date") or "")
+                            if _date:
+                                _desc += ":" + _date
+                            corporate_action_blocked.setdefault(_sym, []).append(_desc)
 
             acct = cached_account.get("value") or {}
             account_equity = 0.0
@@ -2251,8 +2336,10 @@ def main() -> None:
                                 _exit_votes += 1 if float(intel.get("micro") or 0.0) <= -3.0 else 0
                                 _exit_votes += 1 if float(intel.get("relative") or 0.0) <= -3.0 else 0
                                 _exit_votes += 1 if (not bool(_sector_exit.get("ok", True)) or float(_sector_exit.get("score") or 0.0) <= -2.0) else 0
+                                _required_votes = bracket_soft_exit_consensus_min if broker_bracket else soft_exit_consensus_min
                                 st["debug"]["soft_exit_votes"] = _exit_votes
-                                if _exit_votes < soft_exit_consensus_min:
+                                st["debug"]["soft_exit_required_votes"] = _required_votes
+                                if _exit_votes < _required_votes:
                                     st["debug"]["soft_exit_suppressed"] = soft_reason
                                     soft_reason = ""
 
@@ -2267,7 +2354,9 @@ def main() -> None:
                                 soft_age = max(0.0, now_ts - prior[1])
                                 st["debug"]["soft_exit_reason"] = soft_reason
                                 st["debug"]["soft_exit_age_sec"] = round(soft_age, 1)
-                                if held_sec >= soft_exit_min_hold_sec and soft_age >= soft_exit_confirm_sec:
+                                _required_hold = bracket_soft_exit_min_hold_sec if broker_bracket else soft_exit_min_hold_sec
+                                st["debug"]["soft_exit_required_hold_sec"] = _required_hold
+                                if held_sec >= _required_hold and soft_age >= soft_exit_confirm_sec:
                                     exit_reason = soft_reason
                                 else:
                                     st["action"] = f"CONFIRM_EXIT:{soft_reason}"
@@ -2300,6 +2389,9 @@ def main() -> None:
                                         "avg_entry": avg_entry, "held_sec": held_sec, "peak_price": peak,
                                         "spread_bps": st.get("debug", {}).get("spread_bps"),
                                         "quote_age_sec": st.get("debug", {}).get("quote_age_sec"),
+                                        "entry_client_order_id": active_plan.get("entry_client_order_id"),
+                                        "group_id": active_plan.get("entry_group_id"),
+                                        "group_role": active_plan.get("entry_group_role"),
                                     })
                                     intelligence.record_decision(sym, "STOCK", st.get("price"), sig, action, intel_log)
                                 symbols_state[sym] = st
@@ -2381,6 +2473,9 @@ def main() -> None:
                                 st["action"] = "WAIT_BROKER_ARCHIVE"
                             elif intelligence_enabled and (not intelligence.journal._enabled or intelligence.journal.last_error):
                                 st["action"] = "WAIT_AUDIT_LOG"
+                            elif corporate_actions_enabled and sym in corporate_action_blocked:
+                                st["action"] = "CORPORATE_ACTION_BLOCK"
+                                st["debug"]["corporate_actions"] = corporate_action_blocked.get(sym, [])
                             elif dynamic_universe_enabled and sym not in active_universe_set:
                                 st["action"] = "WAIT_UNIVERSE"
                             elif entry_close_window:
@@ -2473,6 +2568,8 @@ def main() -> None:
                                     "strategy": effective_strategy,
                                     "entry_client_order_id": entry_cid,
                                     "order_id": (entry_response or {}).get("id"),
+                                    "entry_group_id": (entry_response or {}).get("group_id"),
+                                    "entry_group_role": (entry_response or {}).get("group_role"),
                                     "entry_filled_at": (entry_response or {}).get("filled_at"),
                                     "confirmed_qty": float((entry_response or {}).get("filled_qty") or 0),
                                 })
@@ -2494,6 +2591,8 @@ def main() -> None:
                                         "spread_bps": st.get("debug", {}).get("spread_bps"),
                                         "quote_age_sec": st.get("debug", {}).get("quote_age_sec"),
                                         "order_id": (entry_response or {}).get("id"),
+                                        "group_id": (entry_response or {}).get("group_id"),
+                                        "group_role": (entry_response or {}).get("group_role"),
                                         "context_json": {"debug": st.get("debug"), "plan": plan_to_save,
                                                          "bid": st.get("bid"), "ask": st.get("ask"),
                                                          "settings": {k: control.get(k) for k in ("stock_entry_confirm_sec", "max_hold_sec", "intelligence_entry_score", "activity_profile")}},
