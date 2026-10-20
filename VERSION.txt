@@ -1,1 +1,1 @@
-4.8.2-persistent-edge-v2
+4.9.0-alpaca-edge-24x7

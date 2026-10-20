@@ -18,15 +18,7 @@ def _strip_env_value(v: str) -> str:
 
 
 def _load_bootstrap_env() -> None:
-    """Load local/Render secret files before importing dashboard/engine modules.
-
-    Supported files (first existing values win only when the process environment
-    does not already define the key):
-      /etc/secrets/tradingbot.env   <- recommended on Render
-      /etc/secrets/alpaca_keys.env
-      ./tradingbot.env              <- convenient local/VPS file
-      ./.env                         <- legacy local file
-    """
+    """Load local/Render secret files before importing dashboard/engine modules."""
     here = Path(__file__).resolve().parent
     paths = [
         Path('/etc/secrets/tradingbot.env'),
@@ -58,7 +50,12 @@ _load_bootstrap_env()
 from waitress import serve
 
 import trading_bot
+from alpaca_v49 import install_v49
 from control_server import app, patch_control, safe_read_json, safe_write_json, STATUS_PATH
+
+# Install monkey-patches before the engine constructs AlpacaRest / IntelligenceEngine.
+# The sidecar itself starts only after persistent state has been restored.
+ALPACA_EDGE = install_v49(trading_bot)
 
 ENGINE_THREAD: threading.Thread | None = None
 ENGINE_LOCK = threading.Lock()
@@ -77,6 +74,7 @@ def set_engine_status(state: str, note: str = "") -> None:
     if not isinstance(st, dict):
         st = {}
     st["engine_state"] = state
+    st["alpaca_edge_v49"] = ALPACA_EDGE.health()
     if note:
         st["notes"] = note
     st["last_update"] = trading_bot.utc_now_iso()
@@ -93,8 +91,6 @@ def engine_target() -> None:
     except Exception as e:
         msg = str(e)
         if "Mangler Alpaca keys" in msg or "Alpaca keys" in msg and "mangler" in msg.lower():
-            # Missing configuration is not a crash. Stop the watchdog restart loop
-            # and show one clear setup message in the dashboard.
             set_engine_status(
                 "AUTH_ERROR",
                 "Mangler Alpaca-noekler. Paa Render: Environment -> Secret Files -> "
@@ -121,7 +117,6 @@ def watchdog() -> None:
             continue
         st = safe_read_json(STATUS_PATH, {})
         if isinstance(st, dict) and st.get("engine_state") == "AUTH_ERROR":
-            # Bad keys require env/redeploy; don't hammer Alpaca endlessly.
             continue
         t = ENGINE_THREAD
         if t is None or not t.is_alive():
@@ -135,8 +130,6 @@ def initialise_state() -> None:
     safe_start = env_bool("CLOUD_SAFE_START", True)
     marker = Path(trading_bot.STATE_DIR) / ".cloud_initialized"
     if safe_start and not marker.exists():
-        # First cloud boot is intentionally safe. With a persistent disk, later restarts
-        # preserve the user's START/STOP state instead of unexpectedly disarming.
         patch_control({"armed": False, "paused": True, "kill": False})
         try:
             marker.write_text("initialized\n", encoding="utf-8")
@@ -148,9 +141,12 @@ def initialise_state() -> None:
 
 def main() -> None:
     from state_storage import StateBackup
+
+    # Restore all evidence databases before Edge V4.9 opens its SQLite recorder.
     backup = StateBackup(trading_bot.STATE_DIR)
-    backup.restore()  # Restore evidence before constructing any learning database.
+    backup.restore()
     initialise_state()
+    ALPACA_EDGE.start()
     start_engine()
     backup.start()
     threading.Thread(target=watchdog, name="engine-watchdog", daemon=True).start()
