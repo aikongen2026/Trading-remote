@@ -1654,12 +1654,6 @@ def main() -> None:
             stock_entry_min_progress_bps = max(0.0, float(control.get("stock_entry_min_progress_bps", 1.0) or 0.0))
             stock_group_loss_streak_count = max(1, int(control.get("stock_group_loss_streak_count", 3) or 3))
             soft_exit_consensus_min = max(1, int(control.get("soft_exit_consensus_min", 2) or 2))
-            bracket_soft_exit_min_hold_sec = max(
-                soft_exit_min_hold_sec, int(control.get("bracket_soft_exit_min_hold_sec", 300) or 300)
-            )
-            bracket_soft_exit_consensus_min = max(
-                soft_exit_consensus_min, int(control.get("bracket_soft_exit_consensus_min", 3) or 3)
-            )
             corporate_actions_enabled = bool(control.get("corporate_actions_enabled", True))
             corporate_action_lookahead_days = max(
                 0, min(14, int(control.get("corporate_action_lookahead_days", 3) or 3))
@@ -1686,6 +1680,12 @@ def main() -> None:
             allow_unvalidated_live = bool(control.get("allow_unvalidated_live", False))
             soft_exit_min_hold_sec = max(0, int(control.get("soft_exit_min_hold_sec", 90) or 0))
             soft_exit_confirm_sec = max(0, int(control.get("soft_exit_confirm_sec", 20) or 0))
+            bracket_soft_exit_min_hold_sec = max(
+                soft_exit_min_hold_sec, int(control.get("bracket_soft_exit_min_hold_sec", 300) or 300)
+            )
+            bracket_soft_exit_consensus_min = max(
+                soft_exit_consensus_min, int(control.get("bracket_soft_exit_consensus_min", 3) or 3)
+            )
             stock_entry_cutoff_min = max(0, int(control.get("stock_entry_cutoff_min", 15) or 0))
             stock_flatten_before_close_min = max(0, int(control.get("stock_flatten_before_close_min", 5) or 0))
             decision_log_interval_sec = max(15, int(control.get("decision_log_interval_sec", 60) or 60))
