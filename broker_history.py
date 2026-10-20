@@ -9,7 +9,7 @@ from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-ORDER_FIELDS = {'id','client_order_id','symbol','asset_class','side','type','order_type','order_class',
+ORDER_FIELDS = {'id','client_order_id','group_id','group_role','symbol','asset_class','side','type','order_type','order_class',
                 'qty','filled_qty','filled_avg_price','limit_price','stop_price','status','submitted_at',
                 'filled_at','canceled_at','expired_at','updated_at','created_at','time_in_force'}
 
