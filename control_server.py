@@ -122,6 +122,256 @@ LOGIN_HTML = r"""
 <style>
 *{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#08101d;color:#eef4ff;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;padding:20px}
 .card{width:min(420px,100%);background:#0f1a33;border:1px solid #24365a;border-radius:18px;padding:24px;box-shadow:0 20px 50px #0008}h1{font-size:24px;margin:0 0 8px}.muted{color:#9fb0cf;font-size:14px;margin-bottom:20px}input{width:100%;padding:14px 15px;border-radius:12px;border:1px solid #30466f;background:#081327;color:#fff;font-size:16px;margin:8px 0 14px}button{width:100%;padding:14px;border:0;border-radius:12px;background:#0f6f4e;color:#fff;font-weight:800;font-size:16px}.err{background:#4a1420;border:1px solid #8c2f49;padding:10px;border-radius:10px;margin-bottom:12px}.logo{width:54px;height:54px;border-radius:14px;background:#12264c;display:grid;place-items:center;font-size:28px;margin-bottom:14px}
+
+    /* ===== NEON BOOST V2 - ONLY VISUAL ===== */
+    :root{
+      --line:#1697ff;
+      --line2:#33d6ff;
+      --line3:#7af7ff;
+      --blue:#1f8fff;
+      --cyan:#3de3ff;
+      --cyan2:#a6fbff;
+      --shadow:0 24px 70px rgba(0,0,0,.52);
+      --glow:0 0 0 1px rgba(51,185,255,.26),0 0 24px rgba(0,153,255,.22);
+      --glow-strong:0 0 0 1px rgba(92,220,255,.42),0 0 22px rgba(0,163,255,.32),0 0 56px rgba(0,108,255,.20);
+    }
+    body{
+      background:
+        radial-gradient(1200px 580px at 50% -80px,rgba(0,140,255,.32),transparent 62%),
+        radial-gradient(760px 420px at 98% 10%,rgba(0,120,255,.16),transparent 58%),
+        radial-gradient(880px 500px at 0% 55%,rgba(0,220,255,.10),transparent 60%),
+        linear-gradient(180deg,#020912 0%,#020b16 42%,#01060d 100%);
+    }
+    body:before{
+      opacity:.42;
+      background-image:
+        linear-gradient(rgba(66,160,220,.10) 1px,transparent 1px),
+        linear-gradient(90deg,rgba(66,160,220,.08) 1px,transparent 1px);
+      background-size:40px 40px;
+    }
+    body:after{
+      width:980px;
+      height:430px;
+      top:-235px;
+      border:1px solid rgba(73,211,255,.20);
+      box-shadow:
+        0 0 110px rgba(0,140,255,.22),
+        inset 0 0 100px rgba(25,170,255,.08);
+      background:
+        repeating-radial-gradient(circle at 50% 100%,rgba(53,191,255,.12) 0 1px,transparent 1px 26px),
+        repeating-linear-gradient(90deg,transparent 0 39px,rgba(55,178,255,.07) 40px 41px);
+    }
+    .topbar{
+      border:1px solid rgba(42,157,255,.42);
+      background:
+        linear-gradient(180deg,rgba(2,15,30,.98),rgba(3,19,38,.90)),
+        radial-gradient(760px 160px at 50% 0%,rgba(0,135,255,.18),transparent 72%);
+      box-shadow:
+        0 20px 48px rgba(0,0,0,.32),
+        inset 0 -1px 0 rgba(80,220,255,.16),
+        0 0 28px rgba(0,120,255,.12);
+    }
+    .topbar:before{
+      inset:auto 20% 0 14%;
+      height:72px;
+      opacity:.55;
+      background:
+        linear-gradient(
+          165deg,
+          transparent 0 10%,
+          rgba(66,220,255,.95) 11% 12%,
+          transparent 13% 20%,
+          rgba(40,154,255,.88) 21% 22%,
+          transparent 23% 34%,
+          rgba(102,235,255,.88) 35% 36%,
+          transparent 37% 48%,
+          rgba(60,165,255,.72) 49% 50%,
+          transparent 51% 62%,
+          rgba(86,231,255,.86) 63% 64%,
+          transparent 65%
+        );
+      filter:drop-shadow(0 0 10px rgba(56,206,255,.65));
+    }
+    .wrap::before{
+      content:"";
+      position:absolute;
+      top:58px;
+      left:140px;
+      right:140px;
+      height:180px;
+      pointer-events:none;
+      opacity:.15;
+      background:
+        radial-gradient(circle at 50% 10%,rgba(90,220,255,.65),transparent 42%),
+        linear-gradient(90deg,transparent 0 6%,rgba(74,214,255,.18) 7%,transparent 8% 17%,rgba(28,146,255,.16) 18%,transparent 19% 29%,rgba(68,228,255,.14) 30%,transparent 31%);
+      clip-path:ellipse(50% 100% at 50% 0%);
+      filter:blur(4px);
+    }
+    .brandMark{
+      border:1px solid #37beff;
+      background:linear-gradient(145deg,rgba(16,108,170,.92),rgba(5,29,55,.98));
+      box-shadow:
+        inset 0 0 30px rgba(80,236,255,.18),
+        0 0 0 1px rgba(65,220,255,.18),
+        0 0 24px rgba(0,165,255,.24),
+        0 0 42px rgba(0,98,255,.14);
+      color:#a5f6ff;
+      text-shadow:0 0 20px rgba(100,231,255,.92);
+    }
+    h1{
+      text-shadow:
+        0 0 16px rgba(73,182,255,.18),
+        0 0 28px rgba(0,140,255,.14);
+    }
+    .revBadge,
+    .runChip.on,
+    .systemBox,
+    .btn.active,
+    .filterBtn.active{
+      box-shadow:
+        0 0 0 1px rgba(79,216,255,.20),
+        0 0 18px rgba(41,188,255,.20),
+        0 0 34px rgba(0,110,255,.10);
+    }
+    .card,
+    .sideCard,
+    .kpiCard,
+    .tableCard,
+    .ordersDetails{
+      border-color:rgba(35,145,214,.92) !important;
+      box-shadow:
+        0 18px 40px rgba(0,0,0,.28),
+        0 0 0 1px rgba(22,133,212,.08),
+        0 0 26px rgba(0,132,255,.12),
+        inset 0 1px 0 rgba(255,255,255,.04),
+        inset 0 0 38px rgba(0,146,255,.05);
+    }
+    .card:after,
+    .sideCard:before{
+      box-shadow:
+        inset 0 0 0 1px rgba(81,221,255,.08),
+        inset 0 0 24px rgba(51,164,255,.04);
+    }
+    .card:hover,
+    .sideCard:hover,
+    .kpiCard:hover{
+      border-color:#39cbff !important;
+      box-shadow:
+        0 20px 44px rgba(0,0,0,.32),
+        0 0 0 1px rgba(86,224,255,.14),
+        0 0 30px rgba(40,196,255,.22),
+        0 0 54px rgba(0,114,255,.12),
+        inset 0 0 30px rgba(55,180,255,.05);
+    }
+    .cardHead,
+    .tableHead{position:relative}
+    .cardHead::after,
+    .tableHead::after{
+      content:"";
+      position:absolute;
+      left:0;
+      right:0;
+      bottom:-8px;
+      height:1px;
+      background:linear-gradient(90deg,transparent,rgba(65,218,255,.7),transparent);
+      box-shadow:0 0 10px rgba(53,204,255,.4);
+      opacity:.7;
+    }
+    .kpiCard{
+      background:
+        linear-gradient(145deg,rgba(7,37,68,.97),rgba(3,18,35,.94)),
+        radial-gradient(220px 80px at 100% 0%,rgba(45,187,255,.18),transparent 70%);
+    }
+    .kpiCard:before{
+      content:"";
+      position:absolute;
+      inset:0;
+      pointer-events:none;
+      background:linear-gradient(90deg,transparent 0 75%,rgba(98,233,255,.08) 100%);
+      opacity:.7;
+    }
+    .kpiValue{
+      text-shadow:
+        0 0 14px rgba(79,221,255,.10),
+        0 0 26px rgba(0,123,255,.08);
+    }
+    .kpiValue.pos{
+      text-shadow:
+        0 0 14px rgba(61,242,193,.22),
+        0 0 28px rgba(0,170,255,.08);
+    }
+    .btn{
+      border-color:#2d78aa;
+      box-shadow:
+        inset 0 1px 0 rgba(255,255,255,.05),
+        0 5px 18px rgba(0,0,0,.14),
+        0 0 0 1px rgba(28,114,178,.06);
+    }
+    .btn:hover{
+      border-color:#48d7ff;
+      box-shadow:
+        0 10px 26px rgba(0,0,0,.24),
+        0 0 16px rgba(58,210,255,.18),
+        0 0 30px rgba(0,122,255,.10);
+    }
+    .heroControls .start{
+      box-shadow:
+        inset 0 1px 0 rgba(255,255,255,.09),
+        0 0 20px rgba(6,225,150,.20),
+        0 0 34px rgba(0,145,255,.08);
+    }
+    .heroControls .stop{
+      box-shadow:
+        0 0 18px rgba(244,174,33,.14),
+        0 0 30px rgba(0,120,255,.05);
+    }
+    .heroControls .danger{
+      box-shadow:
+        0 0 20px rgba(255,44,91,.16),
+        0 0 34px rgba(0,125,255,.06),
+        inset 0 1px 0 rgba(255,255,255,.05);
+    }
+    .banner.good{
+      box-shadow:
+        0 0 18px rgba(24,220,162,.10),
+        0 0 30px rgba(0,130,255,.08),
+        inset 0 0 18px rgba(41,255,194,.04);
+    }
+    .banner.warn{
+      box-shadow:
+        0 0 18px rgba(255,189,61,.08),
+        0 0 26px rgba(0,120,255,.05);
+    }
+    .banner.bad{
+      box-shadow:
+        0 0 18px rgba(255,72,110,.10),
+        0 0 28px rgba(0,100,255,.04);
+    }
+    table{border-top:1px solid rgba(58,196,255,.10)}
+    th{
+      background:linear-gradient(180deg,#06253d,#04192b);
+      box-shadow:inset 0 -1px 0 rgba(54,196,255,.10);
+    }
+    tbody tr:hover{
+      background:linear-gradient(90deg,rgba(10,88,132,.42),rgba(4,36,61,.22));
+      box-shadow:
+        inset 3px 0 0 rgba(58,214,255,.46),
+        0 0 16px rgba(0,120,255,.08);
+    }
+    .marketBadge.stock{box-shadow:0 0 12px rgba(52,196,255,.08)}
+    .marketBadge.crypto{box-shadow:0 0 12px rgba(255,197,50,.06)}
+    input, select{
+      border-color:#2e759f;
+      box-shadow:
+        inset 0 0 14px rgba(0,98,164,.05),
+        0 0 0 1px rgba(15,96,148,.03);
+    }
+    input:focus, select:focus{
+      box-shadow:
+        0 0 0 2px rgba(39,223,255,.14),
+        0 0 16px rgba(39,223,255,.14),
+        0 0 28px rgba(0,114,255,.08);
+    }
 </style></head><body><div class="card"><div class="logo">📈</div><h1>Trading Bot</h1><div class="muted">Sikker fjernkontroll for PC og telefon.</div>{% if error %}<div class="err">{{error}}</div>{% endif %}<form method="post"><input name="password" type="password" autocomplete="current-password" placeholder="Dashboard-passord" autofocus required><button type="submit">LOGG INN</button></form></div></body></html>
 """
 
