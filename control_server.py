@@ -115,7 +115,49 @@ def require_login():
     return redirect(url_for("login", next=p))
 
 
-LOGIN_HTML = r"""\n<!doctype html>
+LOGIN_HTML = r"""
+<!doctype html><html lang="no"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b1220"><title>Trading Bot – innlogging</title>
+<style>
+*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#08101d;color:#eef4ff;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;padding:20px}
+.card{width:min(420px,100%);background:#0f1a33;border:1px solid #24365a;border-radius:18px;padding:24px;box-shadow:0 20px 50px #0008}h1{font-size:24px;margin:0 0 8px}.muted{color:#9fb0cf;font-size:14px;margin-bottom:20px}input{width:100%;padding:14px 15px;border-radius:12px;border:1px solid #30466f;background:#081327;color:#fff;font-size:16px;margin:8px 0 14px}button{width:100%;padding:14px;border:0;border-radius:12px;background:#0f6f4e;color:#fff;font-weight:800;font-size:16px}.err{background:#4a1420;border:1px solid #8c2f49;padding:10px;border-radius:10px;margin-bottom:12px}.logo{width:54px;height:54px;border-radius:14px;background:#12264c;display:grid;place-items:center;font-size:28px;margin-bottom:14px}
+</style></head><body><div class="card"><div class="logo">📈</div><h1>Trading Bot</h1><div class="muted">Sikker fjernkontroll for PC og telefon.</div>{% if error %}<div class="err">{{error}}</div>{% endif %}<form method="post"><input name="password" type="password" autocomplete="current-password" placeholder="Dashboard-passord" autofocus required><button type="submit">LOGG INN</button></form></div></body></html>
+"""
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if not AUTH_REQUIRED:
+        session["auth"] = True
+        return redirect(url_for("home"))
+    error = ""
+    if request.method == "POST":
+        ip = request.headers.get("X-Forwarded-For", request.remote_addr or "unknown").split(",")[0].strip()
+        if login_rate_limited(ip):
+            error = "For mange feilforsøk. Vent noen minutter."
+        else:
+            supplied = str(request.form.get("password") or "")
+            if hmac.compare_digest(supplied, DASHBOARD_PASSWORD):
+                session.clear()
+                session["auth"] = True
+                session.permanent = True
+                target = request.args.get("next") or "/"
+                if not target.startswith("/") or target.startswith("//"):
+                    target = "/"
+                return redirect(target)
+            record_login_failure(ip)
+            error = "Feil passord."
+    return render_template_string(LOGIN_HTML, error=error)
+
+
+@app.get("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
+
+HTML = r"""\n<!doctype html>
 <html lang="no">
 <head>
   <meta charset="utf-8"/>
