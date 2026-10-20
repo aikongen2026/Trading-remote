@@ -1,1 +1,1 @@
-4.9.0-alpaca-edge-24x7
+4.10.0-smart-edge
