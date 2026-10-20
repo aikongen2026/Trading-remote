@@ -370,7 +370,11 @@ setInterval(()=>refresh(false),2500);refresh(false);
 
 @app.get("/")
 def home():
-    return render_template_string(HTML, bot_version=BOT_VERSION, build_id=BUILD_ID)
+    # Dashboard HTML contains modern JavaScript/CSS braces. Serving it directly
+    # avoids Jinja interpreting client-side syntax while still substituting the
+    # two server values the page needs. Login remains a normal Jinja template.
+    page = HTML.replace("{{ bot_version }}", str(BOT_VERSION)).replace("{{ build_id }}", str(BUILD_ID))
+    return Response(page, mimetype="text/html")
 
 
 @app.get("/manifest.webmanifest")
