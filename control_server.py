@@ -115,131 +115,183 @@ def require_login():
     return redirect(url_for("login", next=p))
 
 
-LOGIN_HTML = r"""
-<!doctype html><html lang="no"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#0b1220"><title>Trading Bot – innlogging</title>
-<style>
-*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#08101d;color:#eef4ff;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;padding:20px}
-.card{width:min(420px,100%);background:#0f1a33;border:1px solid #24365a;border-radius:18px;padding:24px;box-shadow:0 20px 50px #0008}h1{font-size:24px;margin:0 0 8px}.muted{color:#9fb0cf;font-size:14px;margin-bottom:20px}input{width:100%;padding:14px 15px;border-radius:12px;border:1px solid #30466f;background:#081327;color:#fff;font-size:16px;margin:8px 0 14px}button{width:100%;padding:14px;border:0;border-radius:12px;background:#0f6f4e;color:#fff;font-weight:800;font-size:16px}.err{background:#4a1420;border:1px solid #8c2f49;padding:10px;border-radius:10px;margin-bottom:12px}.logo{width:54px;height:54px;border-radius:14px;background:#12264c;display:grid;place-items:center;font-size:28px;margin-bottom:14px}
-</style></head><body><div class="card"><div class="logo">📈</div><h1>Trading Bot</h1><div class="muted">Sikker fjernkontroll for PC og telefon.</div>{% if error %}<div class="err">{{error}}</div>{% endif %}<form method="post"><input name="password" type="password" autocomplete="current-password" placeholder="Dashboard-passord" autofocus required><button type="submit">LOGG INN</button></form></div></body></html>
-"""
-
-
-@app.route("/login", methods=["GET", "POST"])
-def login():
-    if not AUTH_REQUIRED:
-        session["auth"] = True
-        return redirect(url_for("home"))
-    error = ""
-    if request.method == "POST":
-        ip = request.headers.get("X-Forwarded-For", request.remote_addr or "unknown").split(",")[0].strip()
-        if login_rate_limited(ip):
-            error = "For mange feilforsøk. Vent noen minutter."
-        else:
-            supplied = str(request.form.get("password") or "")
-            if hmac.compare_digest(supplied, DASHBOARD_PASSWORD):
-                session.clear()
-                session["auth"] = True
-                session.permanent = True
-                target = request.args.get("next") or "/"
-                if not target.startswith("/") or target.startswith("//"):
-                    target = "/"
-                return redirect(target)
-            record_login_failure(ip)
-            error = "Feil passord."
-    return render_template_string(LOGIN_HTML, error=error)
-
-
-@app.get("/logout")
-def logout():
-    session.clear()
-    return redirect(url_for("login"))
-
-
-HTML = r"""
-<!doctype html>
+LOGIN_HTML = r"""\n<!doctype html>
 <html lang="no">
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
-  <meta name="theme-color" content="#0b1220"/>
+  <meta name="theme-color" content="#04111f"/>
   <meta name="apple-mobile-web-app-capable" content="yes"/>
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
   <link rel="manifest" href="/manifest.webmanifest"/>
   <link rel="apple-touch-icon" href="/static/icon-192.png"/>
   <title>Trading Bot</title>
   <style>
-    *{box-sizing:border-box} body{margin:0;background:#08101d;color:#eaf0ff;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;-webkit-tap-highlight-color:transparent}
-    .wrap{max-width:1180px;margin:0 auto;padding:14px 14px 40px}.topbar{position:sticky;top:0;z-index:9;background:#08101df2;backdrop-filter:blur(10px);display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;padding:8px 0 10px}
-    h1{font-size:26px;margin:0}.sub{color:#91a4c8;font-size:12px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.card{background:#0f1a33;border:1px solid #21365c;border-radius:16px;padding:14px;box-shadow:0 8px 24px #0005}.card h2{margin:0 0 12px;font-size:21px}.card h3{margin:14px 0 8px;font-size:15px;color:#b9c9e7}
-    .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.btn{appearance:none;background:#142b56;color:#fff;border:1px solid #294579;padding:11px 14px;border-radius:11px;cursor:pointer;font-weight:750;min-height:44px}.btn:active{transform:translateY(1px)}.btn.good{background:#0e5b41;border-color:#147b58}.btn.start{background:#087443;border-color:#11a45f;font-size:16px}.btn.stop{background:#5c3d0d;border-color:#8a5d13}.btn.danger{background:#68172a;border-color:#9a2841}.btn.ghost{background:#0b162d}.btn.active{outline:2px solid #6fa8ff;box-shadow:0 0 0 3px #6fa8ff22}
-    .heroControls{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-bottom:10px}.heroControls .danger{grid-column:1/-1}.pill{display:inline-block;padding:4px 9px;border-radius:999px;font-weight:800;font-size:12px}.pill.good{background:#073c2d;color:#4bffc0}.pill.bad{background:#461425;color:#ff83a3}.pill.neutral{background:#16284a;color:#bdd0ff}.kv{display:grid;grid-template-columns:145px 1fr;gap:8px 12px;align-items:center}.kv .k{color:#a8b7d2}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.small{font-size:12px}.muted{color:#92a4c3;font-size:12px}.banner{padding:11px 12px;border-radius:11px;margin-bottom:12px;font-weight:800}.banner.bad{background:#471625;border:1px solid #92324e}.banner.good{background:#0e3a2d;border:1px solid #1e7255}.banner.warn{background:#49370e;border:1px solid #85661c}.statusline{display:flex;gap:8px;align-items:center}.dot{width:10px;height:10px;border-radius:50%;background:#71809d}.dot.ok{background:#20d98b;box-shadow:0 0 10px #20d98b}.dot.bad{background:#ff5579}
-    input,select{background:#081327;color:#eaf0ff;border:1px solid #29406b;border-radius:10px;padding:11px;font-size:15px;min-height:44px}.tableWrap{overflow:auto;max-width:100%;-webkit-overflow-scrolling:touch}table{width:100%;border-collapse:collapse;font-size:13px;min-width:900px}th,td{padding:9px 8px;border-bottom:1px solid #21345a;text-align:left;white-space:nowrap}th{color:#aebedb;position:sticky;top:0;background:#0f1a33}.pos{color:#6fffc4}.neg{color:#ff7897}.navActions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.sectionSpace{margin-top:14px}.lastId{max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.loginTag{font-size:12px;color:#9eb0ce}
-    .installHelp{display:none;background:#10264a;border:1px solid #2f5388;border-radius:12px;padding:10px;margin-top:8px;color:#d6e4ff;font-size:13px}
-    .statusSplit{display:grid;grid-template-columns:minmax(0,1fr) 185px;gap:14px;align-items:start}.sideStack{display:grid;gap:10px}.profitBox,.exportBox{background:#091429;border:1px solid #2a4574;border-radius:13px;padding:11px 12px;box-shadow:inset 0 0 0 1px #ffffff05}.profitTitle{font-weight:900;font-size:14px;margin-bottom:8px;letter-spacing:.02em}.exportBox select{width:100%;min-height:38px;padding:8px;margin-bottom:7px}.exportBtn{width:100%;min-height:40px;padding:9px 10px;background:#12315f;border:1px solid #3765a7;border-radius:9px;color:#fff;font-weight:850;cursor:pointer}.exportBtn:hover{background:#174079}.profitRow{display:grid;grid-template-columns:62px 1fr 15px;gap:8px;align-items:baseline;padding:7px 0;border-bottom:1px solid #20365b;cursor:pointer;user-select:none}.profitRow:hover{background:#10203b}.profitLabel{color:#a8b7d2;font-size:12px}.profitValue{font-weight:900;text-align:right;font-size:15px}.profitPct{display:block;font-weight:600;font-size:10px;color:#8fa2c6;margin-top:2px}.profitChev{color:#7f92b4;font-size:11px;transition:transform .18s ease}.profitRow.open .profitChev{transform:rotate(180deg)}.profitDetails{display:none;border-bottom:1px solid #20365b;padding:5px 0 8px}.profitDetails.open{display:block}.profitTrade{padding:7px 3px;border-bottom:1px dashed #1d3154}.profitTrade:last-child{border-bottom:0}.profitTradeTop{display:flex;justify-content:space-between;gap:8px;font-size:11px}.profitTradeSym{font-weight:850;color:#e9f0ff}.profitTradePnl{font-weight:900;color:#56f2b2}.profitTradeMeta{font-size:9.5px;color:#8295b8;margin-top:2px;line-height:1.25}.profitTradeSummary{font-size:10px;color:#9fb2d2;background:#0d1b34;border-radius:7px;padding:6px 7px;margin:3px 0 5px}.profitLoading,.profitEmpty{font-size:10px;color:#91a4c8;padding:7px 3px}.profitFoot{font-size:10px;color:#7f92b4;line-height:1.3;margin-top:8px}.profitValue.pos{color:#56f2b2}.profitValue.neg{color:#ff7897}.profitValue.neutral{color:#d8e2f7}
-    @media(max-width:980px){.statusSplit{grid-template-columns:1fr}.profitBox,.exportBox{max-width:none}.sideStack{grid-template-columns:1fr 1fr}}
-    @media(max-width:760px){.sideStack{grid-template-columns:1fr}.wrap{padding:8px 8px 28px}.grid{grid-template-columns:1fr}.topbar{padding-top:max(7px,env(safe-area-inset-top))}h1{font-size:21px}.card{padding:12px;border-radius:14px}.heroControls{grid-template-columns:1fr 1fr}.btn{padding:12px 13px;flex:1}.row .btn{min-width:calc(50% - 6px)}.kv{grid-template-columns:120px 1fr;font-size:14px}.navActions .btn{min-width:auto;flex:0 0 auto}.lastId{display:none}.desktopOnly{display:none}.tableWrap{margin:0 -4px}table{font-size:12px}.symbolsTable{min-width:1050px}}
+    :root{
+      --bg:#03101c;--bg2:#06182a;--panel:rgba(7,25,43,.88);--panel2:rgba(8,31,52,.80);
+      --line:#174769;--line2:#1b5f87;--text:#eef9ff;--muted:#83a8bf;--cyan:#20d9ff;
+      --teal:#18f0c0;--green:#20e394;--amber:#ffc94d;--red:#ff5576;--purple:#b38cff;
+      --shadow:0 22px 55px rgba(0,0,0,.28);--glow:0 0 26px rgba(32,217,255,.10);
+    }
+    *{box-sizing:border-box}
+    html{background:var(--bg)}
+    body{margin:0;color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Arial;background:
+      radial-gradient(900px 500px at 12% -10%,rgba(10,136,184,.20),transparent 62%),
+      radial-gradient(760px 420px at 95% 3%,rgba(13,183,166,.10),transparent 58%),
+      linear-gradient(180deg,#04111f 0%,#03101b 52%,#020b14 100%);min-height:100vh;-webkit-tap-highlight-color:transparent}
+    body:before{content:"";position:fixed;inset:0;pointer-events:none;opacity:.18;background-image:linear-gradient(rgba(57,170,204,.08) 1px,transparent 1px),linear-gradient(90deg,rgba(57,170,204,.06) 1px,transparent 1px);background-size:48px 48px;mask-image:linear-gradient(to bottom,#000,transparent 70%)}
+    .wrap{max-width:1500px;margin:0 auto;padding:18px 20px 42px;position:relative}
+    .topbar{position:sticky;top:0;z-index:12;background:linear-gradient(180deg,rgba(3,16,28,.96),rgba(3,16,28,.82));backdrop-filter:blur(18px);display:flex;align-items:center;justify-content:space-between;gap:18px;padding:10px 0 14px;border-bottom:1px solid rgba(38,117,157,.28)}
+    .brand{display:flex;align-items:center;gap:14px;min-width:0}.brandMark{width:54px;height:54px;border:1px solid #1fb8d5;border-radius:16px;display:grid;place-items:center;background:linear-gradient(145deg,#0b3049,#071a2b);box-shadow:inset 0 0 22px rgba(32,217,255,.14),0 0 24px rgba(32,217,255,.14);font-weight:950;color:var(--teal);letter-spacing:-1px}.brandCopy{min-width:0}.brandTitleRow{display:flex;align-items:center;gap:10px;flex-wrap:wrap}h1{font-size:29px;line-height:1;margin:0;letter-spacing:-.6px}.revBadge{font-size:11px;font-weight:900;color:#82fbef;border:1px solid #1e8291;background:#08313c;border-radius:999px;padding:5px 9px;letter-spacing:.06em}.sub{color:var(--muted);font-size:12px;line-height:1.5}.sub strong{color:#bfefff}.metaLine{display:flex;gap:9px;flex-wrap:wrap;margin-top:5px}.metaDot:before{content:"";display:inline-block;width:5px;height:5px;background:#1be6ac;border-radius:50%;margin:0 6px 2px 0;box-shadow:0 0 10px #1be6ac}
+    .navActions{display:flex;gap:10px;align-items:center;flex-wrap:wrap;justify-content:flex-end}.systemBox{display:flex;gap:10px;align-items:center;padding:9px 13px;border:1px solid #17466a;border-radius:12px;background:rgba(7,27,46,.68)}.systemBox .dot{margin-right:2px}.sysLabel{font-size:9px;color:#6f9bb6;letter-spacing:.1em}.sysValue{font-size:12px;font-weight:900}.runChip{padding:7px 10px;border-radius:999px;font-size:10px;font-weight:900;letter-spacing:.05em;border:1px solid}.runChip.on{color:#5fffd0;border-color:#169d77;background:#06382d}.runChip.off{color:#ffd978;border-color:#8f6e27;background:#3b2b08}
+    .dot{width:10px;height:10px;border-radius:50%;background:#71809d}.dot.ok{background:#20d98b;box-shadow:0 0 14px #20d98b}.dot.bad{background:#ff5579;box-shadow:0 0 12px #ff557955}.loginTag{font-size:11px;color:#a2bdd1}
+    .btn{appearance:none;border:1px solid #285f87;background:linear-gradient(180deg,#0d2a46,#091d33);color:#eff9ff;padding:11px 15px;border-radius:11px;cursor:pointer;font-weight:800;min-height:43px;transition:.18s ease;box-shadow:inset 0 1px 0 rgba(255,255,255,.025)}.btn:hover{border-color:#35b9e1;transform:translateY(-1px);box-shadow:0 8px 24px rgba(0,0,0,.22),0 0 18px rgba(32,217,255,.08)}.btn:active{transform:translateY(0)}.btn.ghost{background:rgba(6,20,35,.72);text-decoration:none}.btn.active{border-color:#27dfff;color:#bff8ff;box-shadow:0 0 0 1px #27dfff inset,0 0 18px rgba(39,223,255,.12)}
+    .installHelp{display:none;background:#0b2944;border:1px solid #236c98;border-radius:12px;padding:10px 12px;margin:10px 0;color:#d6efff;font-size:13px}
+    .kpiStrip{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:9px;margin:13px 0 14px}.kpiCard{min-width:0;padding:12px 13px;border:1px solid #164c70;border-radius:13px;background:linear-gradient(145deg,rgba(7,31,51,.93),rgba(5,22,39,.86));box-shadow:inset 0 1px 0 rgba(255,255,255,.025),var(--glow)}.kpiHead{display:flex;align-items:center;gap:8px;color:#83a8bf;font-size:10px;text-transform:uppercase;letter-spacing:.055em}.kpiIcon{width:27px;height:27px;display:grid;place-items:center;border-radius:8px;color:#38e9d3;background:#073b43;border:1px solid #11636d;font-size:13px}.kpiValue{font-weight:950;font-size:17px;margin-top:7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.kpiValue.pos{color:#4ff1bd}.kpiValue.neg{color:#ff6d8b}.kpiValue.warn{color:#ffd16f}
+    .mainGrid{display:grid;grid-template-columns:minmax(500px,1.08fr) minmax(410px,.92fr) 250px;gap:13px;align-items:start}.card{background:linear-gradient(155deg,rgba(9,31,52,.93),rgba(5,20,36,.91));border:1px solid #155276;border-radius:17px;padding:15px;box-shadow:var(--shadow),inset 0 1px 0 rgba(255,255,255,.025);position:relative;overflow:hidden}.card:before{content:"";position:absolute;inset:0;pointer-events:none;background:linear-gradient(120deg,rgba(25,216,255,.025),transparent 35%,rgba(16,225,176,.018));}.card>*{position:relative}.card h2{margin:0;font-size:20px;letter-spacing:-.25px}.card h3{margin:14px 0 8px;font-size:12px;color:#b8d4e4;text-transform:uppercase;letter-spacing:.065em}.cardHead{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px}.cardTitle{display:flex;align-items:center;gap:10px}.titleIcon{width:31px;height:31px;border-radius:9px;display:grid;place-items:center;color:#46f4dd;border:1px solid #17667c;background:#083544;box-shadow:0 0 14px rgba(31,224,221,.08)}.cardHint{font-size:11px;color:#7399b1;margin-left:41px;margin-top:-9px;margin-bottom:12px}
+    .heroControls{display:grid;grid-template-columns:1fr 1fr;gap:10px}.heroControls .btn{min-height:63px;font-size:15px;border-radius:13px}.heroControls .start{background:linear-gradient(135deg,#087b58,#079366);border-color:#19dda0;box-shadow:inset 0 1px 0 #ffffff18,0 0 20px #0bd68b1c}.heroControls .stop{background:linear-gradient(135deg,#704b0c,#80601b);border-color:#d19c2d;color:#fff4d6}.heroControls .danger{grid-column:1/-1;background:linear-gradient(135deg,#76152d,#971d3b);border-color:#ff4c6d;box-shadow:0 0 20px #ff355c16}.heroSub{display:block;font-size:10px;font-weight:600;opacity:.75;margin-top:3px}
+    .controlSection{padding-top:2px}.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}.segmented{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.segmented.two{grid-template-columns:repeat(2,minmax(0,180px))}.segmented .btn{width:100%;min-height:49px}.btn.good{background:linear-gradient(180deg,#08714f,#07543d);border-color:#17aa78}.profileRow .btn{min-width:135px}
+    input,select{background:#061726;color:#eaf7ff;border:1px solid #245779;border-radius:10px;padding:11px 12px;font-size:14px;min-height:43px;outline:none}input:focus,select:focus{border-color:#27dfff;box-shadow:0 0 0 2px #27dfff16}.strategyRow{display:grid;grid-template-columns:minmax(0,1fr) 190px;gap:8px}.strategyRow select{width:100%}
+    details.utility{margin-top:13px;border:1px solid #164563;border-radius:12px;background:#061827}.utility summary{list-style:none;cursor:pointer;padding:11px 12px;font-weight:850;color:#bad8e8;font-size:12px;display:flex;justify-content:space-between}.utility summary::-webkit-details-marker{display:none}.utility summary:after{content:"＋";color:#52d9ec}.utility[open] summary:after{content:"−"}.utilityBody{padding:0 11px 12px;border-top:1px solid #113c57}.utilityBody .row{margin-top:10px}.muted{color:#7599b2;font-size:11px;line-height:1.45}
+    .banner{padding:12px 13px;border-radius:11px;margin-bottom:12px;font-weight:850;font-size:13px}.banner.bad{background:#491526;border:1px solid #97314f}.banner.good{background:#07392d;border:1px solid #16825e;color:#bffff0}.banner.warn{background:#49370e;border:1px solid #85661c;color:#ffe6a0}
+    .statusGrid{display:grid;grid-template-columns:1fr 1fr;gap:0 12px}.statusItem{display:grid;grid-template-columns:118px minmax(0,1fr);gap:8px;align-items:center;min-height:34px;border-bottom:1px solid rgba(31,78,108,.38);font-size:12px}.statusItem.wide{grid-column:1/-1;grid-template-columns:118px minmax(0,1fr)}.statusLabel{color:#7fa2bb}.statusVal{min-width:0;overflow:hidden;text-overflow:ellipsis}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}.small{font-size:11px}.pill{display:inline-block;padding:3px 8px;border-radius:999px;font-weight:900;font-size:10px}.pill.good{background:#073d2f;color:#4bffc0;border:1px solid #116d54}.pill.bad{background:#461425;color:#ff83a3;border:1px solid #7d2440}.pill.neutral{background:#112d4a;color:#b9e8ff;border:1px solid #285f80}.lastId{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .sideRail{display:grid;gap:12px}.sideCard{background:linear-gradient(155deg,rgba(8,30,50,.95),rgba(4,18,32,.92));border:1px solid #155276;border-radius:16px;padding:13px;box-shadow:var(--shadow)}.sideTitle{display:flex;align-items:center;gap:8px;font-weight:950;font-size:15px;margin-bottom:8px}.sideTitle .accent{color:#ffd164}.profitRow{display:grid;grid-template-columns:62px 1fr 15px;gap:8px;align-items:center;padding:12px 0;border-bottom:1px solid rgba(30,78,108,.48);cursor:pointer;user-select:none}.profitRow:hover{background:#0a2840}.profitLabel{color:#9ab5c8;font-size:11px}.profitValue{font-weight:950;text-align:right;font-size:16px}.profitValue.pos{color:#4ff1bd}.profitValue.neg{color:#ff708d}.profitValue.neutral{color:#d9ecf6}.profitPct{display:block;font-weight:650;font-size:9px;color:#7898af;margin-top:2px}.profitChev{color:#7092aa;font-size:10px}.profitDetails{display:none;padding:5px 0 8px;border-bottom:1px solid #183f5a}.profitDetails.open{display:block}.profitTrade{padding:7px 2px;border-bottom:1px dashed #17445f}.profitTradeTop{display:flex;justify-content:space-between;gap:7px;font-size:10px}.profitTradeSym{font-weight:900}.profitTradePnl{font-weight:900;color:#58f1bf}.profitTradeMeta,.profitFoot{font-size:9px;color:#6e92aa;line-height:1.35;margin-top:6px}.profitTradeSummary,.profitLoading,.profitEmpty{font-size:10px;color:#91b4ca;padding:7px 2px}.exportBox select{width:100%;margin:4px 0 8px}.exportBtn{width:100%;min-height:43px;padding:9px 10px;background:linear-gradient(180deg,#0a5e8b,#08476d);border:1px solid #22baf0;border-radius:9px;color:#fff;font-weight:900;cursor:pointer}.exportBtn:hover{box-shadow:0 0 18px #22baf022}
+    .sectionSpace{margin-top:13px}.tableCard{padding:0;overflow:hidden}.tableHead{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:14px 15px 12px;border-bottom:1px solid #164462}.tableTitle{display:flex;align-items:center;gap:9px}.filterArea{display:flex;align-items:center;gap:7px;flex-wrap:wrap}.filterBtn{border:1px solid #1e5576;background:#081d31;color:#91afc2;padding:7px 11px;border-radius:8px;font-size:10px;font-weight:850;cursor:pointer}.filterBtn.active{border-color:#25d8ff;color:#d9f9ff;background:#0a3148;box-shadow:0 0 12px #25d8ff12}.searchBox{min-height:34px!important;width:175px!important;padding:7px 10px!important;font-size:11px!important}.tableWrap{overflow:auto;max-width:100%;-webkit-overflow-scrolling:touch}table{width:100%;border-collapse:collapse;font-size:11px;min-width:1020px}th,td{padding:9px 9px;border-bottom:1px solid rgba(24,66,92,.48);text-align:left;white-space:nowrap}th{color:#7399b1;font-size:9px;text-transform:uppercase;letter-spacing:.055em;background:#061827;position:sticky;top:0;z-index:2}tbody tr{transition:.14s}tbody tr:hover{background:rgba(14,67,91,.18)}.symName{color:#eefaff}.marketBadge{padding:3px 7px;border-radius:6px;font-size:9px;font-weight:850;background:#112b43;color:#b4d4e7}.marketBadge.crypto{color:#ffd985;border:1px solid #725720;background:#362b0c}.marketBadge.stock{color:#87e9ff;border:1px solid #1d617a;background:#0a3040}.edgeCell{color:#9fc6d8}.pos{color:#53f0bd!important}.neg{color:#ff708d!important}
+    .ordersDetails{margin-top:13px;border:1px solid #174967;border-radius:14px;background:#051827;overflow:hidden}.ordersDetails summary{cursor:pointer;list-style:none;padding:12px 15px;font-size:12px;font-weight:900;color:#9fc0d2}.ordersDetails summary::-webkit-details-marker{display:none}.ordersDetails summary:after{content:" Vis";float:right;color:#52d9ec}.ordersDetails[open] summary:after{content:" Skjul"}.ordersDetails .tableHead{padding-top:9px}.statusNotes{margin-top:10px;padding-top:9px;border-top:1px solid #173f59}
+    @media(max-width:1220px){.mainGrid{grid-template-columns:1.08fr .92fr}.sideRail{grid-column:1/-1;grid-template-columns:1fr 1fr}.kpiStrip{grid-template-columns:repeat(4,1fr)}}
+    @media(max-width:850px){.wrap{padding:10px 9px 30px}.topbar{position:relative;align-items:flex-start}.brandMark{width:45px;height:45px;border-radius:13px}.brandTitleRow h1{font-size:23px}.navActions{width:100%;justify-content:flex-start}.mainGrid{grid-template-columns:1fr}.sideRail{grid-column:auto;grid-template-columns:1fr}.kpiStrip{grid-template-columns:repeat(2,1fr)}.statusGrid{grid-template-columns:1fr}.statusItem.wide{grid-column:auto}.heroControls .btn{min-height:55px}.strategyRow{grid-template-columns:1fr}.segmented.two{grid-template-columns:1fr 1fr}.tableHead{align-items:flex-start;flex-direction:column}.filterArea{width:100%}.searchBox{width:100%!important}.card{padding:12px}.sub.desktopOnly{display:none}}
+    @media(max-width:480px){.kpiStrip{grid-template-columns:1fr 1fr}.kpiCard{padding:10px}.kpiValue{font-size:15px}.segmented{grid-template-columns:1fr}.segmented.two{grid-template-columns:1fr 1fr}.heroControls{grid-template-columns:1fr}.heroControls .danger{grid-column:auto}.systemBox{display:none}.navActions .btn{padding:9px 10px;min-height:38px}.statusItem{grid-template-columns:105px 1fr}.profileRow .btn{min-width:0;flex:1}}
   </style>
 </head>
 <body><div class="wrap">
-  <div class="topbar">
-    <div><h1>Trading Bot</h1><div class="sub">REV {{ bot_version }} • BUILD {{ build_id }}</div><div class="sub">AUTO 24/7 • PC + mobil</div><div class="sub" id="auditSummary">Kontrollerer historikk…</div></div>
-    <div class="navActions"><div class="statusline"><span id="liveDot" class="dot"></span><span id="liveText" class="loginTag">kobler til…</span></div><button id="installBtn" class="btn ghost" onclick="installApp()">Installer app</button><a class="btn ghost" href="/logout">Logg ut</a></div>
-  </div>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brandMark">AI</div>
+      <div class="brandCopy">
+        <div class="brandTitleRow"><h1>Trading Bot</h1><span class="revBadge">REV {{ bot_version }}</span><span id="headerRunChip" class="runChip off">TRADING PAUSET</span></div>
+        <div class="sub desktopOnly">BUILD {{ build_id }} &nbsp;•&nbsp; AUTO 24/7 &nbsp;•&nbsp; PC + mobil</div>
+        <div class="sub metaLine"><span class="metaDot" id="auditSummary">Kontrollerer historikk…</span></div>
+      </div>
+    </div>
+    <div class="navActions">
+      <div class="systemBox"><span id="liveDot" class="dot"></span><div><div class="sysLabel">SYSTEM</div><div id="liveText" class="sysValue">KOBLER TIL</div></div></div>
+      <button id="installBtn" class="btn ghost" onclick="installApp()">⇩ Installer app</button>
+      <a class="btn ghost" href="/logout">↪ Logg ut</a>
+    </div>
+  </header>
 
   <div id="installHelp" class="installHelp"></div>
 
-  <div class="grid">
-    <div class="card">
-      <h2>Kontroll</h2>
+  <section class="kpiStrip" aria-label="Nøkkeltall">
+    <div class="kpiCard"><div class="kpiHead"><span class="kpiIcon">↗</span>PnL i dag</div><div id="kpi_today" class="kpiValue">-</div></div>
+    <div class="kpiCard"><div class="kpiHead"><span class="kpiIcon">3D</span>3 dager</div><div id="kpi_3d" class="kpiValue">-</div></div>
+    <div class="kpiCard"><div class="kpiHead"><span class="kpiIcon">7D</span>7 dager</div><div id="kpi_7d" class="kpiValue">-</div></div>
+    <div class="kpiCard"><div class="kpiHead"><span class="kpiIcon">✓</span>Ordresikkerhet</div><div id="kpi_guard" class="kpiValue">-</div></div>
+    <div class="kpiCard"><div class="kpiHead"><span class="kpiIcon">☁</span>Cloud 24/7</div><div id="kpi_cloud" class="kpiValue">-</div></div>
+    <div class="kpiCard"><div class="kpiHead"><span class="kpiIcon">A</span>Alpaca</div><div id="kpi_alpaca" class="kpiValue">-</div></div>
+    <div class="kpiCard"><div class="kpiHead"><span class="kpiIcon">◷</span>Sist oppdatert</div><div id="kpi_updated" class="kpiValue">-</div></div>
+  </section>
+
+  <main class="mainGrid">
+    <section class="card controlCard">
+      <div class="cardHead"><div class="cardTitle"><span class="titleIcon">▶</span><h2>Kontroll</h2></div><span class="revBadge">⚡ AUTO</span></div>
+      <div class="cardHint">Start, stopp og konfigurer tradingmotoren</div>
       <div class="heroControls">
-        <button class="btn start" onclick="startTrading()">▶ START TRADING</button>
-        <button class="btn stop" onclick="stopTrading()">■ STOPP TRADING</button>
-        <button class="btn danger" onclick="emergencyStop()">⛔ NØDSTOPP</button>
+        <button class="btn start" onclick="startTrading()">▶ START TRADING<span class="heroSub">Armed + resume</span></button>
+        <button class="btn stop" onclick="stopTrading()">■ STOPP TRADING<span class="heroSub">Disarm + pause</span></button>
+        <button class="btn danger" onclick="emergencyStop()">⚠ NØDSTOPP<span class="heroSub">Blokkerer nye handler umiddelbart</span></button>
       </div>
-      <div class="muted">START = armed + resume. STOPP = disarm + pause. NØDSTOPP blokkerer nye handler umiddelbart, men lukker ikke automatisk eksisterende posisjoner.</div>
 
-      <h3>Marked</h3><div class="row"><button id="m_auto" class="btn" onclick="setMarket('auto')">AUTO 24/7</button><button id="m_stocks" class="btn" onclick="setMarket('stocks')">AKSJER</button><button id="m_crypto" class="btn" onclick="setMarket('crypto')">KRYPTO</button></div>
-      <h3>Aktivitetsprofil</h3><div class="row"><button class="btn good" onclick="setProfile('active')">AKTIV</button><button class="btn" onclick="setProfile('balanced')">BALANSERT</button></div>
-      <h3>Strategi</h3><div class="row"><select id="strategySel"><option value="scalp">scalp</option><option value="hype">hype</option><option value="trend">trend</option><option value="cross">cross</option></select><button class="btn" onclick="setStrategy()">Bruk strategi</button></div>
-      <h3>Avansert</h3><div class="row"><button class="btn ghost" onclick="toggleBool('extended_hours')">Extended av/på</button><button class="btn ghost" onclick="toggleBool('test_mode')">TestMode av/på</button><button class="btn ghost" onclick="postControl('/api/control',{kill:false})">Nullstill nødstop</button></div>
-      <div id="paperTests"><h3>Testordre (kun paper)</h3><div class="row"><input id="buySym" value="AAPL" style="width:120px"><input id="buyQty" type="number" value="1" step="0.001" style="width:100px"><button class="btn good" onclick="testBuy()">TEST BUY</button></div><div class="row" style="margin-top:8px"><input id="sellSym" value="AAPL" style="width:120px"><button class="btn danger" onclick="testSellAll()">TEST SELL ALL</button></div></div>
-    </div>
+      <div class="controlSection">
+        <h3>Marked</h3>
+        <div class="segmented"><button id="m_auto" class="btn" onclick="setMarket('auto')">◎ AUTO 24/7</button><button id="m_stocks" class="btn" onclick="setMarket('stocks')">▥ AKSJER</button><button id="m_crypto" class="btn" onclick="setMarket('crypto')">₿ KRYPTO</button></div>
+        <h3>Aktivitetsprofil</h3>
+        <div class="segmented two profileRow"><button class="btn good" onclick="setProfile('active')">AKTIV</button><button class="btn" onclick="setProfile('balanced')">BALANSERT</button></div>
+        <h3>Strategi</h3>
+        <div class="strategyRow"><select id="strategySel"><option value="scalp">scalp</option><option value="hype">hype</option><option value="trend">trend</option><option value="cross">cross</option></select><button class="btn" onclick="setStrategy()">◎ Bruk strategi</button></div>
+      </div>
 
-    <div class="card">
-      <h2>Status</h2><div id="authBanner" class="banner warn">Kobler til motoren…</div>
-      <div class="statusSplit">
-        <div class="kv">
-          <div class="k">Motor</div><div id="st_engine">-</div><div class="k">Versjon</div><div id="st_version" class="mono small">-</div><div class="k">Alpaca</div><div id="st_auth">-</div><div class="k">Trading</div><div id="st_running">-</div><div class="k">Cloud 24/7</div><div id="st_cloud">-</div><div class="k">Ordresikkerhet</div><div id="st_guard">-</div><div class="k">Marked</div><div id="st_market">-</div><div class="k">Aksje-session</div><div id="st_session">-</div><div class="k">Crypto 24/7</div><div id="st_crypto">-</div><div class="k">Paper</div><div id="st_paper">-</div><div class="k">Strategi</div><div id="st_strategy">-</div><div class="k">Intelligence</div><div id="st_intel">-</div><div class="k">Edge-motor</div><div id="st_edge">-</div><div class="k">Adaptiv V4.5</div><div id="st_adaptive" class="small">-</div><div class="k">Markedsregime</div><div id="st_regime">-</div><div class="k">Global risiko</div><div id="st_risk">-</div><div class="k">Siste nyhet</div><div id="st_news" class="small">-</div><div class="k">PnL i dag</div><div id="st_pnl">-</div><div class="k">Sist oppdatert</div><div class="mono small" id="st_last">-</div><div class="k">Siste ordre</div><div class="mono small lastId" id="lastOrderId">-</div>
+      <details class="utility">
+        <summary>Avansert og testordre</summary>
+        <div class="utilityBody">
+          <div class="row"><button class="btn ghost" onclick="toggleBool('extended_hours')">Extended av/på</button><button class="btn ghost" onclick="toggleBool('test_mode')">TestMode av/på</button><button class="btn ghost" onclick="postControl('/api/control',{kill:false})">Nullstill nødstop</button></div>
+          <div id="paperTests"><h3>Testordre – kun paper</h3><div class="row"><input id="buySym" value="AAPL" style="width:110px"><input id="buyQty" type="number" value="1" step="0.001" style="width:90px"><button class="btn good" onclick="testBuy()">↑ TEST BUY</button><input id="sellSym" value="AAPL" style="width:110px"><button class="btn danger" onclick="testSellAll()">↓ TEST SELL ALL</button></div></div>
         </div>
-        <div class="sideStack">
-          <div class="profitBox">
-            <div class="profitTitle">💰 RESULTAT</div>
-            <div id="profit_row_1" class="profitRow" onclick="toggleProfitTrades(1)"><div class="profitLabel">I dag</div><div id="profit_today" class="profitValue neutral">-</div><div class="profitChev">▼</div></div>
-            <div id="profit_details_1" class="profitDetails"></div>
-            <div id="profit_row_3" class="profitRow" onclick="toggleProfitTrades(3)"><div class="profitLabel">3 dager</div><div id="profit_3d" class="profitValue neutral">-</div><div class="profitChev">▼</div></div>
-            <div id="profit_details_3" class="profitDetails"></div>
-            <div id="profit_row_7" class="profitRow" onclick="toggleProfitTrades(7)"><div class="profitLabel">7 dager</div><div id="profit_7d" class="profitValue neutral">-</div><div class="profitChev">▼</div></div>
-            <div id="profit_details_7" class="profitDetails"></div>
-            <div class="profitFoot">Trykk på I dag / 3 dager / 7 dager for å se vinnende avsluttede trades. Hovedtallet er Alpaca portfolio equity og inkluderer åpne posisjoner.</div>
-          </div>
-          <div class="exportBox">
-            <div class="profitTitle">🧠 AI-ANALYSE</div>
-            <select id="exportDays" aria-label="Velg analyseperiode"><option value="1">Siste 1 dag</option><option value="3">Siste 3 dager</option><option value="7" selected>Siste 7 dager</option><option value="14">Siste 14 dager</option><option value="30">Siste 30 dager</option></select>
-            <button class="exportBtn" onclick="downloadAnalysis()">⬇ LAST NED ÉN AI-FIL</button>
-            <div class="profitFoot">Én ZIP du laster opp direkte i ChatGPT. Inneholder komplett, sanitert audit: trades, exits, score/EV, P/L, ordre, fills, datahelse og rådata. Ingen API-nøkler.</div>
-          </div>
-        </div>
-      </div><div class="muted" id="st_notes" style="margin-top:10px"></div>
-    </div>
-  </div>
+      </details>
+    </section>
 
-  <div class="card sectionSpace"><div class="row" style="justify-content:space-between"><h2>Symboler</h2><button class="btn ghost" onclick="refresh(true)">Oppdater</button></div><div class="tableWrap"><table class="symbolsTable"><thead><tr><th>Marked</th><th>Symbol</th><th>Pris</th><th>Bid</th><th>Ask</th><th>Spread bps</th><th>Edge</th><th>Score</th><th>Signal</th><th>Pos</th><th>Avg</th><th>Action</th><th>Feil</th></tr></thead><tbody id="tblSymbols"></tbody></table></div></div>
-  <div class="card sectionSpace"><div class="row" style="justify-content:space-between"><h2>Orders (siste 30)</h2><button class="btn ghost" onclick="refresh(true)">Refresh orders</button></div><div class="tableWrap"><table><thead><tr><th>Tid</th><th>Symbol</th><th>Side</th><th>Qty/notional</th><th>Type</th><th>Status</th><th>ID</th></tr></thead><tbody id="tblOrders"></tbody></table></div></div>
+    <section class="card statusCard">
+      <div class="cardHead"><div class="cardTitle"><span class="titleIcon">⌁</span><h2>Status</h2></div><span class="sub">Live systemstatus</span></div>
+      <div id="authBanner" class="banner warn">Kobler til motoren…</div>
+      <div class="statusGrid">
+        <div class="statusItem"><div class="statusLabel">Motor</div><div id="st_engine" class="statusVal">-</div></div>
+        <div class="statusItem"><div class="statusLabel">Versjon</div><div id="st_version" class="statusVal mono small">-</div></div>
+        <div class="statusItem"><div class="statusLabel">Alpaca</div><div id="st_auth" class="statusVal">-</div></div>
+        <div class="statusItem"><div class="statusLabel">Trading</div><div id="st_running" class="statusVal">-</div></div>
+        <div class="statusItem"><div class="statusLabel">Cloud 24/7</div><div id="st_cloud" class="statusVal">-</div></div>
+        <div class="statusItem"><div class="statusLabel">Ordresikkerhet</div><div id="st_guard" class="statusVal">-</div></div>
+        <div class="statusItem"><div class="statusLabel">Marked</div><div id="st_market" class="statusVal">-</div></div>
+        <div class="statusItem"><div class="statusLabel">Aksje-session</div><div id="st_session" class="statusVal">-</div></div>
+        <div class="statusItem"><div class="statusLabel">Crypto 24/7</div><div id="st_crypto" class="statusVal">-</div></div>
+        <div class="statusItem"><div class="statusLabel">Paper</div><div id="st_paper" class="statusVal">-</div></div>
+        <div class="statusItem"><div class="statusLabel">Strategi</div><div id="st_strategy" class="statusVal">-</div></div>
+        <div class="statusItem"><div class="statusLabel">Intelligence</div><div id="st_intel" class="statusVal">-</div></div>
+        <div class="statusItem"><div class="statusLabel">Edge-motor</div><div id="st_edge" class="statusVal">-</div></div>
+        <div class="statusItem"><div class="statusLabel">Adaptiv V4.5</div><div id="st_adaptive" class="statusVal small">-</div></div>
+        <div class="statusItem"><div class="statusLabel">Markedsregime</div><div id="st_regime" class="statusVal">-</div></div>
+        <div class="statusItem"><div class="statusLabel">Global risiko</div><div id="st_risk" class="statusVal">-</div></div>
+        <div class="statusItem wide"><div class="statusLabel">Siste nyhet</div><div id="st_news" class="statusVal small">-</div></div>
+        <div class="statusItem"><div class="statusLabel">PnL i dag</div><div id="st_pnl" class="statusVal">-</div></div>
+        <div class="statusItem"><div class="statusLabel">Sist oppdatert</div><div id="st_last" class="statusVal mono small">-</div></div>
+        <div class="statusItem wide"><div class="statusLabel">Siste ordre</div><div id="lastOrderId" class="statusVal mono small lastId">-</div></div>
+      </div>
+      <div id="st_notes" class="muted statusNotes"></div>
+    </section>
+
+    <aside class="sideRail">
+      <section class="sideCard">
+        <div class="sideTitle"><span class="accent">▥</span> Resultat</div>
+        <div id="profit_row_1" class="profitRow" onclick="toggleProfitTrades(1)"><div class="profitLabel">I dag</div><div id="profit_today" class="profitValue neutral">-</div><div class="profitChev">▼</div></div>
+        <div id="profit_details_1" class="profitDetails"></div>
+        <div id="profit_row_3" class="profitRow" onclick="toggleProfitTrades(3)"><div class="profitLabel">3 dager</div><div id="profit_3d" class="profitValue neutral">-</div><div class="profitChev">▼</div></div>
+        <div id="profit_details_3" class="profitDetails"></div>
+        <div id="profit_row_7" class="profitRow" onclick="toggleProfitTrades(7)"><div class="profitLabel">7 dager</div><div id="profit_7d" class="profitValue neutral">-</div><div class="profitChev">▼</div></div>
+        <div id="profit_details_7" class="profitDetails"></div>
+        <div class="profitFoot">Trykk på periodene for faktiske vinnende avsluttede trades. Hovedtallet er Alpaca portfolio equity og inkluderer åpne posisjoner.</div>
+      </section>
+
+      <section class="sideCard exportBox">
+        <div class="sideTitle"><span style="color:var(--purple)">✦</span> AI-Analyse</div>
+        <select id="exportDays" aria-label="Velg analyseperiode"><option value="1">Siste 1 dag</option><option value="3">Siste 3 dager</option><option value="7" selected>Siste 7 dager</option><option value="14">Siste 14 dager</option><option value="30">Siste 30 dager</option></select>
+        <button class="exportBtn" onclick="downloadAnalysis()">⇩ LAST NED ÉN AI-FIL</button>
+        <div class="profitFoot">Komplett sanitert audit for analyse: trades, exits, score/EV, P/L, ordre, fills, datahelse og rådata. Ingen API-nøkler.</div>
+      </section>
+    </aside>
+  </main>
+
+  <section class="card tableCard sectionSpace">
+    <div class="tableHead">
+      <div class="tableTitle"><span class="titleIcon">≋</span><div><h2>Symboler / Posisjoner</h2><div class="sub">Live marked, edge og handling</div></div></div>
+      <div class="filterArea">
+        <button class="filterBtn active" onclick="setSymbolFilter('all',this)">Alle</button>
+        <button class="filterBtn" onclick="setSymbolFilter('stocks',this)">Aksjer</button>
+        <button class="filterBtn" onclick="setSymbolFilter('crypto',this)">Krypto</button>
+        <button class="filterBtn" onclick="setSymbolFilter('active',this)">Aktive</button>
+        <input id="symbolSearch" class="searchBox" placeholder="Søk symbol…" oninput="filterSymbols()">
+        <button class="filterBtn" onclick="refresh(true)">↻ Oppdater</button>
+      </div>
+    </div>
+    <div class="tableWrap"><table class="symbolsTable"><thead><tr><th>Marked</th><th>Symbol</th><th>Pris</th><th>Bid</th><th>Ask</th><th>Spread bps</th><th>Edge</th><th>Score</th><th>Signal</th><th>Pos</th><th>Avg</th><th>Handling</th><th>Feil</th></tr></thead><tbody id="tblSymbols"></tbody></table></div>
+  </section>
+
+  <details class="ordersDetails">
+    <summary>Ordrehistorikk – siste 30</summary>
+    <div class="tableHead"><div class="sub">Broker-/ordreoversikt</div><button class="filterBtn" onclick="refresh(true)">↻ Oppdater ordre</button></div>
+    <div class="tableWrap"><table><thead><tr><th>Tid</th><th>Symbol</th><th>Side</th><th>Qty/notional</th><th>Type</th><th>Status</th><th>ID</th></tr></thead><tbody id="tblOrders"></tbody></table></div>
+  </details>
 </div>
 <script>
-let installPrompt=null, alertsEnabled=false;
+let installPrompt=null, alertsEnabled=false,symbolFilter='all';
 window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();installPrompt=e;document.getElementById('installBtn').style.display='inline-block'});
 if('serviceWorker' in navigator){window.addEventListener('load',()=>navigator.serviceWorker.register('/service-worker.js').catch(()=>{}));}
 async function installApp(){const h=document.getElementById('installHelp');if(installPrompt){installPrompt.prompt();await installPrompt.userChoice;installPrompt=null;h.style.display='none';return;}const ios=/iphone|ipad|ipod/i.test(navigator.userAgent);h.style.display='block';h.innerHTML=ios?'På iPhone/iPad: trykk <b>Del</b> → <b>Legg til på Hjem-skjerm</b>.':'I nettlesermenyen: velg <b>Installer app</b> eller <b>Legg til på startskjermen</b>.';}
@@ -263,12 +315,15 @@ async function setProfile(n){const p=n==='balanced'?{activity_profile:'balanced'
 async function testBuy(){await postControl('/api/test_buy',{symbol:document.getElementById('buySym').value.trim().toUpperCase(),qty:Number(document.getElementById('buyQty').value||1)})}
 async function testSellAll(){await postControl('/api/test_sell_all',{symbol:document.getElementById('sellSym').value.trim().toUpperCase()})}
 function downloadAnalysis(){const el=document.getElementById('exportDays');let d=parseInt(el?.value||'7',10);if(!Number.isFinite(d))d=7;d=Math.max(1,Math.min(30,d));window.location.href='/api/export?days='+encodeURIComponent(d)}
-function renderSymbols(s){const b=document.getElementById('tblSymbols');b.innerHTML='';Object.keys(s||{}).sort((a,c)=>(s[a]?.market==='CRYPTO'?0:1)-(s[c]?.market==='CRYPTO'?0:1)||a.localeCompare(c)).forEach(sym=>{const x=s[sym]||{},sig=x.signal===1?'BUY':x.signal===-1?'SELL':(x.signal??'0');const tr=document.createElement('tr');tr.innerHTML=`<td>${x.market||'-'}</td><td><b>${sym}</b></td><td>${fmt(x.price)}</td><td>${fmt(x.bid)}</td><td>${fmt(x.ask)}</td><td>${x.debug?.spread_bps??'-'}</td><td>${x.debug?.prob_up_pct!=null?('P '+x.debug.prob_up_pct+'% / EV '+(x.debug.ev_bps>=0?'+':'')+x.debug.ev_bps+'bp'):'-'}</td><td><b>${x.debug?.intel_score??'-'}</b></td><td>${sig}</td><td>${x.pos_qty??0}</td><td>${fmt(x.avg_entry)}</td><td>${x.action||'NONE'}</td><td class="neg">${x.error||''}</td>`;b.appendChild(tr)})}
+function setSymbolFilter(f,btn){symbolFilter=f;document.querySelectorAll('.filterBtn').forEach(x=>x.classList.remove('active'));if(btn)btn.classList.add('active');filterSymbols()}
+function filterSymbols(){const q=(document.getElementById('symbolSearch')?.value||'').trim().toUpperCase();document.querySelectorAll('#tblSymbols tr').forEach(tr=>{const market=(tr.dataset.market||'').toLowerCase(),pos=Number(tr.dataset.pos||0);const matchFilter=symbolFilter==='all'||(symbolFilter==='stocks'&&market==='stock')||(symbolFilter==='crypto'&&market==='crypto')||(symbolFilter==='active'&&pos!==0);const matchQ=!q||(tr.dataset.symbol||'').includes(q);tr.style.display=matchFilter&&matchQ?'':'none'})}
+function renderSymbols(s){const b=document.getElementById('tblSymbols');b.innerHTML='';Object.keys(s||{}).sort((a,c)=>(s[a]?.market==='CRYPTO'?0:1)-(s[c]?.market==='CRYPTO'?0:1)||a.localeCompare(c)).forEach(sym=>{const x=s[sym]||{},sig=x.signal===1?'BUY':x.signal===-1?'SELL':(x.signal??'0');const tr=document.createElement('tr');tr.dataset.market=String(x.market||'');tr.dataset.pos=String(x.pos_qty??0);tr.dataset.symbol=String(sym).toUpperCase();const edge=x.debug?.p_tp_before_sl_pct!=null?('TP '+x.debug.p_tp_before_sl_pct+'% / EV '+(x.debug.ev_bps>=0?'+':'')+x.debug.ev_bps+'bp'):(x.debug?.prob_up_pct!=null?('P '+x.debug.prob_up_pct+'% / EV '+(x.debug.ev_bps>=0?'+':'')+x.debug.ev_bps+'bp'):'-');const marketBadge='<span class="marketBadge '+String(x.market||'').toLowerCase()+'">'+safeHtml(x.market||'-')+'</span>';const action=String(x.action||'NONE');const actionClass=/BUY|ENTRY|SUBMIT|FILLED/.test(action)?'pos':/SELL|EXIT|STOP|LOSS|ERROR|RECONCILE/.test(action)?'neg':'';tr.innerHTML=`<td>${marketBadge}</td><td><b class="symName">${safeHtml(sym)}</b></td><td>${fmt(x.price)}</td><td>${fmt(x.bid)}</td><td>${fmt(x.ask)}</td><td>${x.debug?.spread_bps??'-'}</td><td class="edgeCell">${edge}</td><td><b>${x.debug?.intel_score??'-'}</b></td><td>${sig}</td><td>${x.pos_qty??0}</td><td>${fmt(x.avg_entry)}</td><td class="${actionClass}">${safeHtml(action)}</td><td class="neg">${safeHtml(x.error||'')}</td>`;b.appendChild(tr)});filterSymbols()}
 function renderOrders(o){const b=document.getElementById('tblOrders');b.innerHTML='';(o||[]).forEach(x=>{const tr=document.createElement('tr'),t=String(x.filled_at||x.submitted_at||x.created_at||'').replace('T',' ').replace('Z','');tr.innerHTML=`<td class="mono small">${t||'-'}</td><td><b>${x.symbol||''}</b></td><td>${x.side||''}</td><td>${x.qty||x.notional||''}</td><td>${x.type||''}</td><td>${x.status||''}</td><td class="mono small">${x.id||''}</td>`;b.appendChild(tr)})}
-async function refresh(force=false){try{const r=await apiFetch('/api/status?ts='+Date.now()+(force?'&force=1':''));const s=await r.json();const live=Boolean(s.auth_ok)&&String(s.engine_state||'').toUpperCase()==='RUNNING';document.getElementById('liveDot').className='dot '+(live?'ok':'bad');document.getElementById('liveText').textContent=live?'ONLINE':'IKKE KLAR';const running=Boolean(s.armed)&&!Boolean(s.paused)&&!Boolean(s.kill);document.getElementById('st_engine').textContent=s.engine_state||'-';document.getElementById('st_version').textContent=s.version||'-';document.getElementById('st_auth').innerHTML=pill(s.auth_ok);document.getElementById('st_running').innerHTML=pill(running);const cr=s.cloud_runtime||{};const cloudEl=document.getElementById('st_cloud');if(cr.render){cloudEl.innerHTML=cr.always_on_expected?'<span class="pill good">24/7 OK</span>':'<span class="pill bad">RENDER FREE</span>'}else{cloudEl.innerHTML='<span class="pill neutral">LOKAL</span>'}const eg=s.execution_guard||{};const guardBad=Number(eg.reconcile_required||0)>0;const guardPending=Number(eg.active_exits||0)>0;document.getElementById('st_guard').innerHTML=guardBad?'<span class="pill bad">AVSTEM '+Number(eg.reconcile_required||0)+'</span>':guardPending?'<span class="pill neutral">EXIT '+Number(eg.active_exits||0)+'</span>':'<span class="pill good">OK</span>';document.getElementById('st_market').textContent=(s.market_mode||'auto').toUpperCase();document.getElementById('st_session').textContent=s.stock_session||'-';document.getElementById('st_crypto').innerHTML=pill(s.crypto_24_7);document.getElementById('st_paper').innerHTML=pill(s.paper);document.getElementById('st_strategy').textContent=s.strategy_mode||'-';const ii=s.intelligence||{};document.getElementById('st_intel').innerHTML=pill(ii.enabled!==false);const pe=s.profit_engine||{};document.getElementById('st_edge').innerHTML=pill(pe.enabled!==false);const ah=s.audit_health||{},lh=s.learning_health||{},bh=s.broker_history||{},sb=s.storage_backup||{};const storageLabel=sb.configured?(sb.last_error?'backupfeil':sb.last_success_utc?'databasebackup hver 5. min':'backup venter'):ah.persistent===false?'midlertidig lagring':'lokal lagring';document.getElementById('auditSummary').textContent='Historikk: '+((ah.last_error||lh.last_error)?'lagringsfeil':storageLabel)+' • Alpaca '+(bh.stream||'starter')+' • '+(bh.sync_complete?'historikk hentet':'historikk venter');const ae=s.adaptive_edge||{},md=s.market_data||{};const sh=ae.shadow?.models||{};const shN=Object.values(sh).reduce((a,x)=>a+Number(x?.samples||0),0);document.getElementById('st_adaptive').textContent=`${String(md.stock_feed||'iex').toUpperCase()} • router ${ae.router?'ON':'OFF'} • univers ${Number(ae.active_symbols||0)}/${Number(ae.total_symbols||0)} • shadow ${shN}`;document.getElementById('st_regime').textContent=(ii.regime_label||'-')+' '+(ii.regime_score??'');document.getElementById('st_risk').textContent=(ii.global_risk??'-')+'/100';document.getElementById('st_news').textContent=ii.last_headline||'-';document.getElementById('st_pnl').textContent=fmt(s.day_pnl_usd);renderProfit(s.profit_summary||{today_usd:s.day_pnl_usd});document.getElementById('st_last').textContent=s.last_update||'';document.getElementById('st_notes').textContent=s.notes||'';document.getElementById('strategySel').value=s.strategy_mode||'scalp';document.getElementById('paperTests').style.display=s.paper===false?'none':'block';['auto','stocks','crypto'].forEach(m=>document.getElementById('m_'+m).classList.toggle('active',(s.market_mode||'auto')===m));const ab=document.getElementById('authBanner');if(s.auth_ok===false){ab.className='banner bad';ab.textContent='Alpaca avviser API-nøklene.'}else if(live&&cr.render&&cr.always_on_expected===false){ab.className='banner warn';ab.textContent='Trading kjører, men Render FREE kan sovne når dashboardet lukkes. Oppgrader Compute til 0.5c-512mb for ekte 24/7.'}else if(live){ab.className='banner good';ab.textContent=running?'Motor ONLINE – trading er STARTET.':'Motor ONLINE – trading er STOPPET/PAUSET.'}else{ab.className='banner warn';ab.textContent='Motoren starter eller restarter…'}renderSymbols(s.symbols||{});renderOrders(s.orders||[]);const lo=(s.orders||[])[0]?.id||'-';document.getElementById('lastOrderId').textContent=lo}catch(e){document.getElementById('liveDot').className='dot bad';document.getElementById('liveText').textContent='OFFLINE'}}
+function setKpi(id,value,kind=''){const el=document.getElementById(id);if(!el)return;el.textContent=value??'-';el.className='kpiValue '+kind}
+function updateKpis(s,running,cr,guardBad,guardPending){const p=s.profit_summary||{};const cls=v=>Number(v)>0?'pos':Number(v)<0?'neg':'';setKpi('kpi_today',money(p.today_usd??s.day_pnl_usd),cls(p.today_usd??s.day_pnl_usd));setKpi('kpi_3d',p.days3_usd==null?'-':money(p.days3_usd),cls(p.days3_usd));setKpi('kpi_7d',p.days7_usd==null?'-':money(p.days7_usd),cls(p.days7_usd));setKpi('kpi_guard',guardBad?'AVSTEM':guardPending?'EXIT':'OK',guardBad?'neg':'pos');setKpi('kpi_cloud',cr.render?(cr.always_on_expected?'24/7 OK':'FREE'):'LOKAL',cr.always_on_expected?'pos':cr.render?'warn':'');setKpi('kpi_alpaca',s.auth_ok===true?'Tilkoblet':s.auth_ok===false?'Feil':'Venter',s.auth_ok===true?'pos':s.auth_ok===false?'neg':'');const raw=String(s.last_update||'');let t='-';try{const d=new Date(raw);if(!Number.isNaN(d.getTime()))t=d.toLocaleTimeString('no-NO',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}catch(e){}setKpi('kpi_updated',t);const chip=document.getElementById('headerRunChip');if(chip){chip.textContent=running?'TRADING AKTIV':'TRADING PAUSET';chip.className='runChip '+(running?'on':'off')}}
+async function refresh(force=false){try{const r=await apiFetch('/api/status?ts='+Date.now()+(force?'&force=1':''));const s=await r.json();const live=Boolean(s.auth_ok)&&String(s.engine_state||'').toUpperCase()==='RUNNING';document.getElementById('liveDot').className='dot '+(live?'ok':'bad');document.getElementById('liveText').textContent=live?'ONLINE':'IKKE KLAR';const running=Boolean(s.armed)&&!Boolean(s.paused)&&!Boolean(s.kill);document.getElementById('st_engine').textContent=s.engine_state||'-';document.getElementById('st_version').textContent=s.version||'-';document.getElementById('st_auth').innerHTML=pill(s.auth_ok);document.getElementById('st_running').innerHTML=pill(running);const cr=s.cloud_runtime||{};const cloudEl=document.getElementById('st_cloud');if(cr.render){cloudEl.innerHTML=cr.always_on_expected?'<span class="pill good">24/7 OK</span>':'<span class="pill bad">RENDER FREE</span>'}else{cloudEl.innerHTML='<span class="pill neutral">LOKAL</span>'}const eg=s.execution_guard||{};const guardBad=Number(eg.reconcile_required||0)>0;const guardPending=Number(eg.active_exits||0)>0;document.getElementById('st_guard').innerHTML=guardBad?'<span class="pill bad">AVSTEM '+Number(eg.reconcile_required||0)+'</span>':guardPending?'<span class="pill neutral">EXIT '+Number(eg.active_exits||0)+'</span>':'<span class="pill good">OK</span>';updateKpis(s,running,cr,guardBad,guardPending);document.getElementById('st_market').textContent=(s.market_mode||'auto').toUpperCase();document.getElementById('st_session').textContent=s.stock_session||'-';document.getElementById('st_crypto').innerHTML=pill(s.crypto_24_7);document.getElementById('st_paper').innerHTML=pill(s.paper);document.getElementById('st_strategy').textContent=s.strategy_mode||'-';const ii=s.intelligence||{};document.getElementById('st_intel').innerHTML=pill(ii.enabled!==false);const pe=s.profit_engine||{};document.getElementById('st_edge').innerHTML=pill(pe.enabled!==false);const ah=s.audit_health||{},lh=s.learning_health||{},bh=s.broker_history||{},sb=s.storage_backup||{};const storageLabel=sb.configured?(sb.last_error?'backupfeil':sb.last_success_utc?'databasebackup hver 5. min':'backup venter'):ah.persistent===false?'midlertidig lagring':'lokal lagring';document.getElementById('auditSummary').textContent='Historikk: '+((ah.last_error||lh.last_error)?'lagringsfeil':storageLabel)+' • Alpaca '+(bh.stream||'starter')+' • '+(bh.sync_complete?'historikk hentet':'historikk venter');const ae=s.adaptive_edge||{},md=s.market_data||{};const sh=ae.shadow?.models||{};const shN=Object.values(sh).reduce((a,x)=>a+Number(x?.samples||0),0);document.getElementById('st_adaptive').textContent=`${String(md.stock_feed||'iex').toUpperCase()} • router ${ae.router?'ON':'OFF'} • univers ${Number(ae.active_symbols||0)}/${Number(ae.total_symbols||0)} • shadow ${shN}`;document.getElementById('st_regime').textContent=(ii.regime_label||'-')+' '+(ii.regime_score??'');document.getElementById('st_risk').textContent=(ii.global_risk??'-')+'/100';document.getElementById('st_news').textContent=ii.last_headline||'-';document.getElementById('st_pnl').textContent=fmt(s.day_pnl_usd);renderProfit(s.profit_summary||{today_usd:s.day_pnl_usd});document.getElementById('st_last').textContent=s.last_update||'';document.getElementById('st_notes').textContent=s.notes||'';document.getElementById('strategySel').value=s.strategy_mode||'scalp';document.getElementById('paperTests').style.display=s.paper===false?'none':'block';['auto','stocks','crypto'].forEach(m=>document.getElementById('m_'+m).classList.toggle('active',(s.market_mode||'auto')===m));const ab=document.getElementById('authBanner');if(s.auth_ok===false){ab.className='banner bad';ab.textContent='Alpaca avviser API-nøklene.'}else if(live&&cr.render&&cr.always_on_expected===false){ab.className='banner warn';ab.textContent='Trading kjører, men Render FREE kan sovne når dashboardet lukkes. Oppgrader Compute til 0.5c-512mb for ekte 24/7.'}else if(live){ab.className='banner good';ab.textContent=running?'Motor ONLINE – trading er STARTET.':'Motor ONLINE – trading er STOPPET/PAUSET.'}else{ab.className='banner warn';ab.textContent='Motoren starter eller restarter…'}renderSymbols(s.symbols||{});renderOrders(s.orders||[]);const lo=(s.orders||[])[0]?.id||'-';document.getElementById('lastOrderId').textContent=lo}catch(e){document.getElementById('liveDot').className='dot bad';document.getElementById('liveText').textContent='OFFLINE'}}
 setInterval(()=>refresh(false),2500);refresh(false);
-</script></body></html>
-"""
+</script></body></html>\n"""
 
 
 @app.get("/")
