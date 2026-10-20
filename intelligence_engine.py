@@ -247,6 +247,9 @@ class SignalJournal:
                     event_type TEXT,
                     exit_reason TEXT,
                     client_order_id TEXT,
+                    entry_client_order_id TEXT,
+                    group_id TEXT,
+                    group_role TEXT,
                     order_id TEXT,
                     position_qty REAL,
                     avg_entry REAL,
@@ -263,7 +266,10 @@ class SignalJournal:
                     "estimated_cost_bps", "outcome_5m", "outcome_15m", "outcome_60m",
                     "position_qty", "avg_entry", "held_sec", "peak_price", "spread_bps", "quote_age_sec"
                 )
-                text_cols = ("bot_version", "event_type", "exit_reason", "client_order_id", "order_id", "context_json")
+                text_cols = (
+                    "bot_version", "event_type", "exit_reason", "client_order_id",
+                    "entry_client_order_id", "group_id", "group_role", "order_id", "context_json"
+                )
                 for col in real_cols:
                     if col not in cols:
                         db.execute(f"ALTER TABLE decisions ADD COLUMN {col} REAL")
@@ -284,8 +290,9 @@ class SignalJournal:
                     """INSERT INTO decisions(
                     ts,symbol,market,price,technical,mtf,relative,news,regime,global_risk,composite,signal,action,reason,
                     probability_up,expected_value_bps,take_profit_pct,stop_loss_pct,estimated_cost_bps,
-                    bot_version,event_type,exit_reason,client_order_id,order_id,position_qty,avg_entry,held_sec,peak_price,spread_bps,quote_age_sec,context_json)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    bot_version,event_type,exit_reason,client_order_id,entry_client_order_id,group_id,group_role,order_id,
+                    position_qty,avg_entry,held_sec,peak_price,spread_bps,quote_age_sec,context_json)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         row.get("ts") or utc_now().isoformat(), row.get("symbol"), row.get("market"),
                         row.get("price"), row.get("technical"), row.get("mtf"), row.get("relative"),
@@ -294,7 +301,8 @@ class SignalJournal:
                         row.get("probability_up"), row.get("expected_value_bps"), row.get("take_profit_pct"),
                         row.get("stop_loss_pct"), row.get("estimated_cost_bps"),
                         row.get("bot_version"), row.get("event_type"), row.get("exit_reason"),
-                        row.get("client_order_id"), row.get("order_id"), row.get("position_qty"),
+                        row.get("client_order_id"), row.get("entry_client_order_id"),
+                        row.get("group_id"), row.get("group_role"), row.get("order_id"), row.get("position_qty"),
                         row.get("avg_entry"), row.get("held_sec"), row.get("peak_price"),
                         row.get("spread_bps"), row.get("quote_age_sec"),
                         json.dumps(row.get("context_json"), ensure_ascii=False, default=str),
@@ -1456,6 +1464,9 @@ class IntelligenceEngine:
             "event_type": intelligence.get("event_type"),
             "exit_reason": intelligence.get("exit_reason"),
             "client_order_id": intelligence.get("client_order_id"),
+            "entry_client_order_id": intelligence.get("entry_client_order_id"),
+            "group_id": intelligence.get("group_id"),
+            "group_role": intelligence.get("group_role"),
             "order_id": intelligence.get("order_id"),
             "position_qty": intelligence.get("position_qty"),
             "avg_entry": intelligence.get("avg_entry"),
