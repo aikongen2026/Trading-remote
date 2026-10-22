@@ -1155,7 +1155,7 @@ class IntelligenceEngine:
 
     # -------------------- cross-market regime --------------------
     def _market_regime(self) -> None:
-        proxies = ["SPY", "QQQ", "IWM", "XLE", "GLD", "TLT", "HYG", "USO", "UUP", "VIXY"]
+        proxies = ["SPY", "QQQ", "IWM", "DIA", "SMH", "XLK", "XLF", "XLI", "XLV", "XLY", "XLP", "XLC", "XLU", "XLB", "XLE", "GLD", "TLT", "HYG", "USO", "UUP", "VIXY"]
         try:
             end = utc_now()
             start = end - timedelta(days=3)
