@@ -83,7 +83,12 @@ class AdaptiveRouter:
         elif regime >= 58.0 and (factor > 1.5 or gm > 0.004) and risk < 85.0:
             mode, reason = "trend", "risk_on_trend"
         elif regime <= 40.0:
-            mode, reason = "scalp", "risk_off_defensive"
+            # V4.12: the bot is long-only. The 3-day audit showed all four
+            # scalp-routed entries lost money while trend-routed entries were
+            # profitable. In risk-off conditions a fast scalp bounce is exactly
+            # where a long-only engine is most vulnerable, so require the slower
+            # trend state instead of falling back to scalp.
+            mode, reason = "trend", "risk_off_long_filter"
 
         return mode, {
             "mode": mode, "reason": reason, "regime": round(regime, 2),
@@ -123,7 +128,8 @@ def dynamic_universe(
             group = group_for_symbol(sym)
         except Exception:
             group = "DEFAULT"
-        gm = abs(sf(getattr(intelligence, "group_momentum", {}).get(group, 0.0)))
+        gm_raw = sf(getattr(intelligence, "group_momentum", {}).get(group, 0.0))
+        gm = abs(gm_raw)
 
         spread_bps = 50.0
         age = 999.0
@@ -147,7 +153,9 @@ def dynamic_universe(
         score += clamp(rv * 3200.0, 0.0, 12.0)
         score += clamp(news * 0.65, 0.0, 12.0)
         score += clamp(abs(factor) * 0.50, 0.0, 8.0)
-        score += clamp(gm * 450.0, 0.0, 7.0)
+        # Long-only sector rotation must be directional: reward leading groups
+        # and penalize lagging groups instead of using absolute momentum.
+        score += clamp(gm_raw * 700.0, -9.0, 9.0)
         score -= clamp(max(0.0, spread_bps - 8.0) / 5.0, 0.0, 18.0)
         if age > 20.0:
             score -= 20.0
