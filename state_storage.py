@@ -21,7 +21,19 @@ MAX_BYTES=64*1024*1024
 
 def resolve_state_dir(here):
     configured=(os.getenv('TRADINGBOT_STATE_DIR') or '').strip()
-    target=Path(configured) if configured else (Path('/var/data/tradingbot') if os.path.ismount('/var/data') else Path(here))
+    render_mode=(os.getenv('RENDER') or '').strip().lower() in {'1','true','yes','on'}
+    persistent_root=Path('/var/data')
+    # Render persistent disks are mounted at /var/data, but os.path.ismount()
+    # is not reliable in every container/runtime. Prefer the known disk path
+    # whenever it exists on Render so journals survive deploys/restarts.
+    if configured:
+        target=Path(configured)
+    elif render_mode and persistent_root.exists():
+        target=persistent_root/'tradingbot'
+    elif os.path.ismount('/var/data'):
+        target=persistent_root/'tradingbot'
+    else:
+        target=Path(here)
     target.mkdir(parents=True,exist_ok=True)
     return target
 
