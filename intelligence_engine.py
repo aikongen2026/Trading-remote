@@ -99,24 +99,40 @@ def normalize_symbol(s: str) -> str:
 TECH = {
     "AAPL", "MSFT", "NVDA", "AMD", "AVGO", "AMZN", "META", "GOOGL", "GOOG", "TSLA",
     "NFLX", "INTC", "QCOM", "TXN", "AMAT", "MU", "IBM", "ORCL", "ADBE", "CRM", "CSCO",
-    "INTU", "NOW", "SNOW", "PLTR", "CRWD", "PANW", "ZS", "SNPS", "CDNS",
+    "INTU", "NOW", "SNOW", "PLTR", "CRWD", "PANW", "ZS", "SNPS", "CDNS", "QQQ", "SMH", "XLK",
 }
 ENERGY = {"XOM", "CVX", "COP", "OXY", "SLB", "HAL", "MPC", "VLO", "XLE", "USO"}
 DEFENSE = {"LMT", "NOC", "RTX", "GD", "LHX"}
+INDUSTRIAL = {"XLI"}
 AIRLINES = {"AAL", "UAL", "DAL", "LUV"}
-BANKS = {"JPM", "BAC", "WFC", "C", "GS", "MS", "V", "MA", "AXP"}
-CONSUMER = {"KO", "PEP", "COST", "WMT", "HD", "ABNB", "BKNG", "UBER"}
-HEALTH = {"UNH", "LLY"}
+BANKS = {"JPM", "BAC", "WFC", "C", "GS", "MS", "V", "MA", "AXP", "XLF"}
+CONSUMER_DISCRETIONARY = {"HD", "ABNB", "BKNG", "UBER", "XLY"}
+CONSUMER_STAPLES = {"KO", "PEP", "COST", "WMT", "XLP"}
+HEALTH = {"UNH", "LLY", "XLV"}
+COMMUNICATION = {"XLC"}
+UTILITIES = {"XLU"}
+MATERIALS = {"XLB"}
+BROAD_MARKET = {"SPY", "IWM", "DIA"}
+RATES = {"TLT"}
+GOLD = {"GLD"}
 CRYPTO = {"BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD", "DOGEUSD", "LINKUSD", "AVAXUSD"}
 
 BENCHMARK_BY_GROUP = {
-    "TECH": "QQQ",
+    "TECH": "XLK",
     "ENERGY": "XLE",
-    "BANKS": "SPY",
-    "CONSUMER": "SPY",
-    "HEALTH": "SPY",
-    "DEFENSE": "SPY",
-    "AIRLINES": "SPY",
+    "BANKS": "XLF",
+    "CONSUMER_DISCRETIONARY": "XLY",
+    "CONSUMER_STAPLES": "XLP",
+    "HEALTH": "XLV",
+    "INDUSTRIAL": "XLI",
+    "DEFENSE": "XLI",
+    "AIRLINES": "XLI",
+    "COMMUNICATION": "XLC",
+    "UTILITIES": "XLU",
+    "MATERIALS": "XLB",
+    "BROAD_MARKET": "SPY",
+    "RATES": "TLT",
+    "GOLD": "GLD",
     "DEFAULT": "SPY",
 }
 
@@ -129,14 +145,30 @@ def group_for_symbol(symbol: str) -> str:
         return "ENERGY"
     if s in DEFENSE:
         return "DEFENSE"
+    if s in INDUSTRIAL:
+        return "INDUSTRIAL"
     if s in AIRLINES:
         return "AIRLINES"
     if s in BANKS:
         return "BANKS"
-    if s in CONSUMER:
-        return "CONSUMER"
+    if s in CONSUMER_DISCRETIONARY:
+        return "CONSUMER_DISCRETIONARY"
+    if s in CONSUMER_STAPLES:
+        return "CONSUMER_STAPLES"
     if s in HEALTH:
         return "HEALTH"
+    if s in COMMUNICATION:
+        return "COMMUNICATION"
+    if s in UTILITIES:
+        return "UTILITIES"
+    if s in MATERIALS:
+        return "MATERIALS"
+    if s in BROAD_MARKET:
+        return "BROAD_MARKET"
+    if s in RATES:
+        return "RATES"
+    if s in GOLD:
+        return "GOLD"
     if s in CRYPTO:
         return "CRYPTO"
     return "DEFAULT"
@@ -1123,7 +1155,7 @@ class IntelligenceEngine:
 
     # -------------------- cross-market regime --------------------
     def _market_regime(self) -> None:
-        proxies = ["SPY", "QQQ", "IWM", "XLE", "GLD", "TLT", "HYG", "USO", "UUP", "VIXY"]
+        proxies = ["SPY", "QQQ", "IWM", "DIA", "SMH", "XLK", "XLF", "XLI", "XLV", "XLY", "XLP", "XLC", "XLU", "XLB", "XLE", "GLD", "TLT", "HYG", "USO", "UUP", "VIXY"]
         try:
             end = utc_now()
             start = end - timedelta(days=3)

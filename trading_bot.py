@@ -77,7 +77,7 @@ def acquire_single_instance_socket() -> socket.socket:
 
 
 DEFAULT_CONTROL: Dict[str, Any] = {
-    "config_version": 10,
+    "config_version": 11,
     "paused": True,
     "kill": False,
     "armed": False,
@@ -128,6 +128,11 @@ DEFAULT_CONTROL: Dict[str, Any] = {
     "crypto_taker_fee_bps": 25.0,
     "crypto_min_net_edge_bps": 20.0,
     "crypto_entry_confirm_bars": 2,
+    "crypto_tier1_symbols": ["BTC/USD", "ETH/USD", "SOL/USD"],
+    "crypto_tier2_score_bonus": 7.0,
+    "crypto_tier2_ev_bonus_bps": 10.0,
+    "crypto_tier2_confirm_bonus": 1,
+    "crypto_tier2_notional_factor": 0.50,
     "crypto_symbols": [
         "BTC/USD", "ETH/USD", "SOL/USD", "XRP/USD", "DOGE/USD", "LINK/USD", "AVAX/USD"
     ],
@@ -138,7 +143,7 @@ DEFAULT_CONTROL: Dict[str, Any] = {
         "PANW", "ZS", "SNPS", "CDNS", "JPM", "BAC", "WFC", "C", "GS", "MS",
         "V", "MA", "AXP", "KO", "PEP", "COST", "WMT", "HD", "UNH", "LLY",
         "XOM", "CVX", "COP", "OXY", "XLE", "LMT", "NOC", "RTX", "GD", "SPY", "QQQ",
-        "IWM", "DIA", "SMH", "XLK", "XLF", "XLI", "GLD", "TLT"
+        "IWM", "DIA", "SMH", "XLK", "XLF", "XLI", "XLV", "XLY", "XLP", "XLC", "XLU", "XLB", "GLD", "TLT"
     ],
     "intelligence_enabled": True,
     "activity_profile": "active",
@@ -259,6 +264,20 @@ def ensure_control_file() -> Dict[str, Any]:
         for _k in ("render_usage_guard_enabled", "render_usage_block_new_entries_at"):
             if _k not in control:
                 control[_k] = DEFAULT_CONTROL[_k]
+                changed = True
+
+    if old_version < 11:
+        # Sector ETFs extend the existing Alpaca equity engine; no new broker path.
+        sector_etfs = ["XLV", "XLY", "XLP", "XLC", "XLU", "XLB"]
+        existing = [str(x).upper().strip() for x in (control.get("symbols") or []) if str(x).strip()]
+        merged = list(dict.fromkeys(existing + sector_etfs))
+        if merged != control.get("symbols"):
+            control["symbols"] = merged
+            changed = True
+        for _k in ("crypto_tier1_symbols", "crypto_tier2_score_bonus", "crypto_tier2_ev_bonus_bps",
+                   "crypto_tier2_confirm_bonus", "crypto_tier2_notional_factor"):
+            if _k not in control:
+                control[_k] = json.loads(json.dumps(DEFAULT_CONTROL[_k])) if isinstance(DEFAULT_CONTROL[_k], (dict, list)) else DEFAULT_CONTROL[_k]
                 changed = True
 
     if control.get("config_version") != DEFAULT_CONTROL["config_version"]:
@@ -1498,6 +1517,18 @@ class BarsCache:
 def main() -> None:
     instance_socket = acquire_single_instance_socket()
     cfg = load_cfg()
+    paper_only_mode = to_bool_env(_env_value("TRADINGBOT_PAPER_ONLY", default="true"), True)
+    if paper_only_mode and not cfg.paper:
+        safe_write_json(
+            STATUS_PATH,
+            {
+                "paper": False, "auth_ok": False, "engine_state": "PAPER_ONLY_BLOCK",
+                "armed": False, "paused": True, "kill": True, "last_update": utc_now_iso(),
+                "day_pnl_usd": 0, "notes": "V4.12 is locked to Alpaca PAPER trading. Live trading is blocked.",
+                "symbols": {}, "orders": [],
+            },
+        )
+        raise RuntimeError("PAPER_ONLY_BLOCK: set ALPACA_PAPER=true; V4.12 refuses live trading")
     api = AlpacaRest(cfg)
     try:
         cfg.stock_feed = api.resolve_stock_feed()
@@ -1690,6 +1721,13 @@ def main() -> None:
             crypto_taker_fee_bps = max(0.0, float(control.get("crypto_taker_fee_bps", 25.0) or 0.0))
             crypto_min_net_edge_bps = max(0.0, float(control.get("crypto_min_net_edge_bps", 20.0) or 0.0))
             crypto_entry_confirm_bars = max(1, int(control.get("crypto_entry_confirm_bars", 2) or 1))
+            crypto_tier1_symbols = {
+                symbol_key(str(x)) for x in (control.get("crypto_tier1_symbols") or ["BTC/USD", "ETH/USD", "SOL/USD"])
+            }
+            crypto_tier2_score_bonus = max(0.0, float(control.get("crypto_tier2_score_bonus", 7.0) or 0.0))
+            crypto_tier2_ev_bonus_bps = max(0.0, float(control.get("crypto_tier2_ev_bonus_bps", 10.0) or 0.0))
+            crypto_tier2_confirm_bonus = max(0, int(control.get("crypto_tier2_confirm_bonus", 1) or 0))
+            crypto_tier2_notional_factor = max(0.10, min(1.0, float(control.get("crypto_tier2_notional_factor", 0.50) or 0.50)))
             stock_entry_min_progress_bps = max(0.0, float(control.get("stock_entry_min_progress_bps", 1.0) or 0.0))
             stock_group_loss_streak_count = max(1, int(control.get("stock_group_loss_streak_count", 3) or 3))
             soft_exit_consensus_min = max(1, int(control.get("soft_exit_consensus_min", 2) or 2))
@@ -2768,13 +2806,19 @@ def main() -> None:
                                 st["debug"].update(dbg)
                             st["signal"] = sig
 
+                            crypto_tier = 1 if symbol_key(sym) in crypto_tier1_symbols else 2
+                            tier_score_threshold = intelligence_entry_score + (0.0 if crypto_tier == 1 else crypto_tier2_score_bonus)
+                            tier_confirm_required = crypto_entry_confirm_bars + (0 if crypto_tier == 1 else crypto_tier2_confirm_bonus)
+                            st["debug"]["crypto_tier"] = crypto_tier
+                            st["debug"]["tier_score_threshold"] = tier_score_threshold
+
                             intel = {"score": 50.0, "entry_allowed": bool(sig > 0), "exit_bias": False, "reason": "intelligence disabled"}
                             if intelligence_enabled:
                                 try:
                                     intel = intelligence.score_symbol(sym, "CRYPTO", closes, sig, st["debug"], activity_profile)
                                     intel["entry_allowed"] = bool(
                                         sig > 0
-                                        and float(intel.get("score", 0)) >= intelligence_entry_score
+                                        and float(intel.get("score", 0)) >= tier_score_threshold
                                         and not bool(intel.get("event_blackout"))
                                         and not bool(intel.get("risk_veto"))
                                     )
@@ -2789,7 +2833,7 @@ def main() -> None:
                                 except Exception as e:
                                     st["debug"]["intel_error"] = str(e)
 
-                            intel["entry_threshold"] = intelligence_entry_score
+                            intel["entry_threshold"] = tier_score_threshold
                             profit_plan = None
                             if profit_engine_enabled and st.get("price"):
                                 try:
@@ -2947,7 +2991,7 @@ def main() -> None:
                                         min_mom_pct, min_move_pct, min_slope_pct, crypto_entry_confirm_bars,
                                     )
                                 st["debug"]["entry_confirmations"] = confirmations
-                                st["debug"]["entry_confirmations_required"] = crypto_entry_confirm_bars
+                                st["debug"]["entry_confirmations_required"] = tier_confirm_required
 
                                 if not broker_fresh:
                                     st["action"] = "WAIT_BROKER_DATA"
@@ -2959,6 +3003,9 @@ def main() -> None:
                                     st["action"] = "WAIT_PERSISTENT_STORAGE"
                                 elif intelligence_enabled and not bool(intel.get("entry_allowed")):
                                     st["action"] = f"WAIT_INTEL:{float(intel.get('score', 0)):.0f}"
+                                elif (profit_engine_enabled and profit_plan is not None and crypto_tier == 2
+                                      and float(profit_plan.expected_value_bps or -999.0) < (crypto_min_net_edge_bps + crypto_tier2_ev_bonus_bps)):
+                                    st["action"] = f"WAIT_TIER2_EDGE:{profit_plan.expected_value_bps:+.0f}bp"
                                 elif profit_engine_enabled and (profit_plan is None or not bool(profit_plan.allowed)):
                                     if profit_plan is None:
                                         st["action"] = "WAIT_EDGE"
@@ -2979,7 +3026,7 @@ def main() -> None:
                                     st["action"] = "OPEN_ORDER"
                                 elif now_crypto_ts - last_trade_ts.get(k, 0) < crypto_cooldown_sec:
                                     st["action"] = "COOLDOWN"
-                                elif crypto_strategy_mode == "scalp" and confirmations < crypto_entry_confirm_bars:
+                                elif crypto_strategy_mode == "scalp" and confirmations < tier_confirm_required:
                                     st["action"] = "WAIT_CONFIRM"
                                 elif crypto_max_spread_bps > 0 and spread_bps > crypto_max_spread_bps:
                                     st["action"] = "SPREAD_BPS_TOO_WIDE"
@@ -2987,6 +3034,8 @@ def main() -> None:
                                     st["action"] = "MAX_CRYPTO_POSITIONS"
                                 else:
                                     notional = float(profit_plan.notional_usd) if profit_engine_enabled and profit_plan is not None else crypto_notional_usd
+                                    if crypto_tier == 2:
+                                        notional *= crypto_tier2_notional_factor
                                     from execution_guard import make_client_order_id as _make_cid
                                     entry_cid = _make_cid("tbe-", "CRYPTO", sym)
                                     execution_guard.block_entry("CRYPTO", sym, "entry_submitting", entry_cid)
@@ -2997,6 +3046,8 @@ def main() -> None:
                                         "trailing_activate_pct": crypto_trailing_activate_pct, "trailing_stop_pct": crypto_trailing_stop_pct,
                                         "notional_usd": notional, "expected_value_bps": None, "probability_up_pct": None,
                                     }
+                                    plan_to_save["notional_usd"] = notional
+                                    plan_to_save["crypto_tier"] = crypto_tier
                                     plan_to_save.update({"broker_bracket": False, "created_at": utc_now_iso(), "strategy": crypto_strategy_mode,
                                                          "entry_client_order_id": entry_cid})
                                     trade_plans[k] = plan_to_save
