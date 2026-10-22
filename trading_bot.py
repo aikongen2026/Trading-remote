@@ -3046,6 +3046,8 @@ def main() -> None:
                                         "trailing_activate_pct": crypto_trailing_activate_pct, "trailing_stop_pct": crypto_trailing_stop_pct,
                                         "notional_usd": notional, "expected_value_bps": None, "probability_up_pct": None,
                                     }
+                                    plan_to_save["notional_usd"] = notional
+                                    plan_to_save["crypto_tier"] = crypto_tier
                                     plan_to_save.update({"broker_bracket": False, "created_at": utc_now_iso(), "strategy": crypto_strategy_mode,
                                                          "entry_client_order_id": entry_cid})
                                     trade_plans[k] = plan_to_save
