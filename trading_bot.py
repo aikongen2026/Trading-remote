@@ -137,7 +137,8 @@ DEFAULT_CONTROL: Dict[str, Any] = {
         "CSCO", "INTU", "PYPL", "NOW", "UBER", "ABNB", "BKNG", "SNOW", "PLTR", "CRWD",
         "PANW", "ZS", "SNPS", "CDNS", "JPM", "BAC", "WFC", "C", "GS", "MS",
         "V", "MA", "AXP", "KO", "PEP", "COST", "WMT", "HD", "UNH", "LLY",
-        "XOM", "CVX", "COP", "OXY", "XLE", "LMT", "NOC", "RTX", "GD", "SPY", "QQQ"
+        "XOM", "CVX", "COP", "OXY", "XLE", "LMT", "NOC", "RTX", "GD", "SPY", "QQQ",
+        "IWM", "DIA", "SMH", "XLK", "XLF", "XLI", "GLD", "TLT"
     ],
     "intelligence_enabled": True,
     "activity_profile": "active",
@@ -242,6 +243,20 @@ def ensure_control_file() -> Dict[str, Any]:
     if old_version < 9:
         for _k in ("bracket_soft_exit_min_hold_sec", "bracket_soft_exit_consensus_min",
                    "corporate_actions_enabled", "corporate_action_lookahead_days"):
+            if _k not in control:
+                control[_k] = DEFAULT_CONTROL[_k]
+                changed = True
+
+    # V4.11 expands the existing equity engine with liquid ETFs that require no
+    # new execution model. Custom symbols are preserved.
+    if old_version < 10:
+        etfs = ["IWM", "DIA", "SMH", "XLK", "XLF", "XLI", "GLD", "TLT"]
+        existing = [str(x).upper().strip() for x in (control.get("symbols") or []) if str(x).strip()]
+        merged = list(dict.fromkeys(existing + etfs))
+        if merged != control.get("symbols"):
+            control["symbols"] = merged
+            changed = True
+        for _k in ("render_usage_guard_enabled", "render_usage_block_new_entries_at"):
             if _k not in control:
                 control[_k] = DEFAULT_CONTROL[_k]
                 changed = True
@@ -1620,7 +1635,14 @@ def main() -> None:
             render_usage_guard_enabled = bool(control.get("render_usage_guard_enabled", True))
             render_usage = read_usage(os.path.join(STATE_DIR, "render_usage.json")) if render_usage_guard_enabled else {}
             render_usage_policy = str(render_usage.get("policy") or "UNMETERED").upper()
-            usage_entry_blocked = render_usage_policy in {"HARD", "OVER"}
+            _usage_rank = {"UNMETERED": 0, "NORMAL": 0, "WARN": 1, "SAVE": 2, "STRONG": 3, "HARD": 4, "OVER": 5}
+            _block_at = str(control.get("render_usage_block_new_entries_at", "HARD") or "HARD").upper()
+            if _block_at not in {"WARN", "SAVE", "STRONG", "HARD", "OVER"}:
+                _block_at = "HARD"
+            usage_entry_blocked = (
+                render_usage_guard_enabled
+                and _usage_rank.get(render_usage_policy, 0) >= _usage_rank[_block_at]
+            )
             if render_usage_policy == "SAVE":
                 poll_sec = max(poll_sec, 2)
             elif render_usage_policy == "STRONG":
