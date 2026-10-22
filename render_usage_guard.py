@@ -36,6 +36,7 @@ import requests
 
 
 API_URL = "https://api.render.com/v1/metrics/bandwidth"
+SERVICES_URL = "https://api.render.com/v1/services"
 
 
 def _float_env(name: str, default: float) -> float:
@@ -61,13 +62,11 @@ def _month_start_iso() -> str:
     return datetime(now.year, now.month, 1, tzinfo=timezone.utc).isoformat()
 
 
-def _resource_ids() -> List[str]:
+def _configured_resource_ids() -> List[str]:
     raw = str(os.getenv("RENDER_USAGE_RESOURCE_IDS") or "").strip()
-    ids = [x.strip() for x in raw.replace(";", ",").split(",") if x.strip()]
-    service_id = str(os.getenv("RENDER_SERVICE_ID") or "").strip()
-    if service_id and service_id not in ids:
-        ids.append(service_id)
-    return list(dict.fromkeys(ids))
+    return list(dict.fromkeys(
+        x.strip() for x in raw.replace(";", ",").split(",") if x.strip()
+    ))
 
 
 def _atomic_json(path: Path, data: Dict[str, Any]) -> None:
@@ -127,26 +126,75 @@ class RenderUsageGuard:
         self.stop_event = threading.Event()
         self.session = requests.Session()
         self.api_key = str(os.getenv("RENDER_API_KEY") or "").strip()
-        self.resources = _resource_ids()
+        self.resources = _configured_resource_ids()
         self.cap_gb = max(0.1, _float_env("RENDER_BANDWIDTH_CAP_GB", 5.0))
         self.check_sec = max(300, _int_env("RENDER_USAGE_CHECK_SEC", 900))
 
     @property
     def configured(self) -> bool:
-        return bool(self.api_key and self.resources)
+        return bool(self.api_key)
 
-    def _request_series(self) -> list[dict[str, Any]]:
-        headers = {
+    def _headers(self) -> Dict[str, str]:
+        return {
             "Accept": "application/json",
             "Authorization": f"Bearer {self.api_key}",
         }
+
+    def _discover_resource_ids(self) -> List[str]:
+        """Discover every service visible to the Render API key.
+
+        Included bandwidth is workspace-level, so monitoring only the current
+        TradingBot service can understate billable usage. An explicit
+        RENDER_USAGE_RESOURCE_IDS list overrides discovery when desired.
+        """
+        if self.resources:
+            return list(self.resources)
+
+        ids: List[str] = []
+        cursor = ""
+        seen_cursors: set[str] = set()
+        for _ in range(50):
+            params: Dict[str, Any] = {"limit": 100}
+            if cursor:
+                params["cursor"] = cursor
+            r = self.session.get(SERVICES_URL, headers=self._headers(), params=params, timeout=20)
+            r.raise_for_status()
+            data = r.json()
+            if not isinstance(data, list):
+                raise ValueError("Render services API returned a non-list payload")
+            if not data:
+                break
+            next_cursor = ""
+            for row in data:
+                if not isinstance(row, dict):
+                    continue
+                service = row.get("service") if isinstance(row.get("service"), dict) else row
+                sid = str((service or {}).get("id") or "").strip()
+                if sid:
+                    ids.append(sid)
+                rc = str(row.get("cursor") or "").strip()
+                if rc:
+                    next_cursor = rc
+            if len(data) < 100 or not next_cursor or next_cursor in seen_cursors:
+                break
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
+
+        current = str(os.getenv("RENDER_SERVICE_ID") or "").strip()
+        if current:
+            ids.append(current)
+        return list(dict.fromkeys(ids))
+
+    def _request_series(self, resources: List[str]) -> list[dict[str, Any]]:
         params: list[tuple[str, str]] = [
             ("startTime", _month_start_iso()),
             ("endTime", _utc_now_iso()),
         ]
-        for resource_id in self.resources:
+        for resource_id in resources:
             params.append(("resource", resource_id))
-        r = self.session.get(API_URL, headers=headers, params=params, timeout=20)
+        if not resources:
+            raise ValueError("No Render services are visible to the API key")
+        r = self.session.get(API_URL, headers=self._headers(), params=params, timeout=20)
         r.raise_for_status()
         data = r.json()
         if not isinstance(data, list):
@@ -177,7 +225,8 @@ class RenderUsageGuard:
             "configured": self.configured,
             "source": "render_api" if self.configured else "not_configured",
             "cap_gb": round(self.cap_gb, 3),
-            "resources": self.resources,
+            "resources": list(self.resources),
+            "scope": "configured_services" if self.resources else "all_visible_services",
             "warn_pct": _float_env("RENDER_USAGE_WARN_PCT", 60.0),
             "save_pct": _float_env("RENDER_USAGE_SAVE_PCT", 75.0),
             "strong_pct": _float_env("RENDER_USAGE_STRONG_PCT", 85.0),
@@ -200,7 +249,10 @@ class RenderUsageGuard:
             return base
 
         try:
-            used_gb = self._sum_series_gb(self._request_series())
+            resources = self._discover_resource_ids()
+            base["resources"] = resources
+            base["service_count"] = len(resources)
+            used_gb = self._sum_series_gb(self._request_series(resources))
             percent = (used_gb / self.cap_gb) * 100.0
             base.update({
                 "used_gb": round(used_gb, 4),
