@@ -17,6 +17,26 @@ services:
         value: "true"
       - key: TRADINGBOT_PAPER_ONLY
         value: "true"
+      - key: SAXO_SIM_ENABLED
+        value: "false"
+      - key: SAXO_SIM_ACCESS_TOKEN
+        sync: false
+      - key: SAXO_SIM_REFRESH_TOKEN
+        sync: false
+      - key: SAXO_SIM_APP_KEY
+        sync: false
+      - key: SAXO_SIM_APP_SECRET
+        sync: false
+      - key: SAXO_SIM_ACCOUNT_KEY
+        sync: false
+      - key: SAXO_SIM_POLL_SEC
+        value: "120"
+      - key: SAXO_SIM_CHART_REFRESH_SEC
+        value: "600"
+      - key: SAXO_SIM_DAILY_BUDGET_MB
+        value: "12"
+      - key: SAXO_SIM_MONTHLY_BUDGET_MB
+        value: "250"
       - key: ALPACA_DATA_FEED
         value: auto
       - key: ALPACA_DATA_FEED_AUTO
