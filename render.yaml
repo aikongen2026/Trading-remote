@@ -19,6 +19,20 @@ services:
         value: auto
       - key: ALPACA_DATA_FEED_AUTO
         value: "true"
+      - key: RENDER_API_KEY
+        sync: false
+      - key: RENDER_BANDWIDTH_CAP_GB
+        value: "5"
+      - key: RENDER_USAGE_WARN_PCT
+        value: "60"
+      - key: RENDER_USAGE_SAVE_PCT
+        value: "75"
+      - key: RENDER_USAGE_STRONG_PCT
+        value: "85"
+      - key: RENDER_USAGE_HARD_PCT
+        value: "95"
+      - key: RENDER_USAGE_CHECK_SEC
+        value: "900"
       - key: DASHBOARD_PASSWORD
         sync: false
       - key: DASHBOARD_SECRET_KEY

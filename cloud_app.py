@@ -52,10 +52,12 @@ from waitress import serve
 import trading_bot
 from alpaca_v49 import install_v49
 from control_server import app, patch_control, safe_read_json, safe_write_json, STATUS_PATH
+from render_usage_guard import RenderUsageGuard
 
 # Install monkey-patches before the engine constructs AlpacaRest / IntelligenceEngine.
 # The sidecar itself starts only after persistent state has been restored.
 ALPACA_EDGE = install_v49(trading_bot)
+RENDER_USAGE_GUARD = RenderUsageGuard(trading_bot.STATE_DIR)
 
 ENGINE_THREAD: threading.Thread | None = None
 ENGINE_LOCK = threading.Lock()
@@ -147,6 +149,7 @@ def main() -> None:
     backup.restore()
     initialise_state()
     ALPACA_EDGE.start()
+    RENDER_USAGE_GUARD.start()
     start_engine()
     backup.start()
     threading.Thread(target=watchdog, name="engine-watchdog", daemon=True).start()

@@ -39,6 +39,7 @@ from adaptive_edge import AdaptiveRouter, ShadowLab, dynamic_universe, sector_co
 from runtime_audit import RuntimeAudit, EntryConfirmation, supervise_stocks, epoch
 from broker_history import BrokerHistory
 from state_storage import resolve_state_dir, health as backup_health
+from render_usage_guard import read_usage
 
 try:
     import tkinter as tk
@@ -76,7 +77,7 @@ def acquire_single_instance_socket() -> socket.socket:
 
 
 DEFAULT_CONTROL: Dict[str, Any] = {
-    "config_version": 9,
+    "config_version": 10,
     "paused": True,
     "kill": False,
     "armed": False,
@@ -84,6 +85,8 @@ DEFAULT_CONTROL: Dict[str, Any] = {
     "test_mode": False,
     "strategy_mode": "scalp",
     "poll_sec": 1,
+    "render_usage_guard_enabled": True,
+    "render_usage_block_new_entries_at": "HARD",
     "fast_sma": 6,
     "slow_sma": 18,
     "timeframe": "1Min",
@@ -134,7 +137,8 @@ DEFAULT_CONTROL: Dict[str, Any] = {
         "CSCO", "INTU", "PYPL", "NOW", "UBER", "ABNB", "BKNG", "SNOW", "PLTR", "CRWD",
         "PANW", "ZS", "SNPS", "CDNS", "JPM", "BAC", "WFC", "C", "GS", "MS",
         "V", "MA", "AXP", "KO", "PEP", "COST", "WMT", "HD", "UNH", "LLY",
-        "XOM", "CVX", "COP", "OXY", "XLE", "LMT", "NOC", "RTX", "GD", "SPY", "QQQ"
+        "XOM", "CVX", "COP", "OXY", "XLE", "LMT", "NOC", "RTX", "GD", "SPY", "QQQ",
+        "IWM", "DIA", "SMH", "XLK", "XLF", "XLI", "GLD", "TLT"
     ],
     "intelligence_enabled": True,
     "activity_profile": "active",
@@ -239,6 +243,20 @@ def ensure_control_file() -> Dict[str, Any]:
     if old_version < 9:
         for _k in ("bracket_soft_exit_min_hold_sec", "bracket_soft_exit_consensus_min",
                    "corporate_actions_enabled", "corporate_action_lookahead_days"):
+            if _k not in control:
+                control[_k] = DEFAULT_CONTROL[_k]
+                changed = True
+
+    # V4.11 expands the existing equity engine with liquid ETFs that require no
+    # new execution model. Custom symbols are preserved.
+    if old_version < 10:
+        etfs = ["IWM", "DIA", "SMH", "XLK", "XLF", "XLI", "GLD", "TLT"]
+        existing = [str(x).upper().strip() for x in (control.get("symbols") or []) if str(x).strip()]
+        merged = list(dict.fromkeys(existing + etfs))
+        if merged != control.get("symbols"):
+            control["symbols"] = merged
+            changed = True
+        for _k in ("render_usage_guard_enabled", "render_usage_block_new_entries_at"):
             if _k not in control:
                 control[_k] = DEFAULT_CONTROL[_k]
                 changed = True
@@ -1611,6 +1629,27 @@ def main() -> None:
             poll_sec = int(control.get("poll_sec", 5))
             poll_sec = max(1, poll_sec)
 
+            # V4.11 Render usage guard. This never closes positions and never changes
+            # the Render plan. It only reduces polling and blocks NEW entries when
+            # bandwidth approaches the configured monthly cap.
+            render_usage_guard_enabled = bool(control.get("render_usage_guard_enabled", True))
+            render_usage = read_usage(os.path.join(STATE_DIR, "render_usage.json")) if render_usage_guard_enabled else {}
+            render_usage_policy = str(render_usage.get("policy") or "UNMETERED").upper()
+            _usage_rank = {"UNMETERED": 0, "NORMAL": 0, "WARN": 1, "SAVE": 2, "STRONG": 3, "HARD": 4, "OVER": 5}
+            _block_at = str(control.get("render_usage_block_new_entries_at", "HARD") or "HARD").upper()
+            if _block_at not in {"WARN", "SAVE", "STRONG", "HARD", "OVER"}:
+                _block_at = "HARD"
+            usage_entry_blocked = (
+                render_usage_guard_enabled
+                and _usage_rank.get(render_usage_policy, 0) >= _usage_rank[_block_at]
+            )
+            if render_usage_policy == "SAVE":
+                poll_sec = max(poll_sec, 2)
+            elif render_usage_policy == "STRONG":
+                poll_sec = max(poll_sec, 3)
+            elif render_usage_policy in {"HARD", "OVER"}:
+                poll_sec = max(poll_sec, 5)
+
             stock_qty = float(control.get("stock_qty", 1) or 1)
 
             cooldown_sec = int(control.get("cooldown_sec", 15))
@@ -1713,6 +1752,12 @@ def main() -> None:
             # bars trenger ikke refetches hvert sekund siden 1Min bars ikke endrer seg meningsfullt like ofte.
             refresh_bars_every_sec = int(control.get("refresh_bars_every_sec", max(10, min(60, timeframe_to_seconds(timeframe) // 2))))
             refresh_bars_every_sec = max(1, refresh_bars_every_sec)
+            if render_usage_policy == "SAVE":
+                refresh_bars_every_sec = max(refresh_bars_every_sec, 20)
+            elif render_usage_policy == "STRONG":
+                refresh_bars_every_sec = max(refresh_bars_every_sec, 30)
+            elif render_usage_policy in {"HARD", "OVER"}:
+                refresh_bars_every_sec = max(refresh_bars_every_sec, 60)
 
             stocks = symbol_universe(control)
             crypto_symbols = crypto_universe(control)
@@ -2497,6 +2542,8 @@ def main() -> None:
                                 st["action"] = "QUOTE_STALE"
                             elif not confirmed:
                                 st["action"] = "WAIT_ENTRY_CONFIRMATION"
+                            elif usage_entry_blocked:
+                                st["action"] = "RENDER_USAGE_GUARD"
                             elif risk_blocked:
                                 st["action"] = "RISK_BLOCKED"
                             elif skip_if_open_order and has_open_order_for_symbol(orders, sym):
@@ -2924,6 +2971,8 @@ def main() -> None:
                                     st["action"] = "WAIT_NEW_SIGNAL"
                                 elif quote_is_stale:
                                     st["action"] = "QUOTE_STALE"
+                                elif usage_entry_blocked:
+                                    st["action"] = "RENDER_USAGE_GUARD"
                                 elif risk_blocked:
                                     st["action"] = "RISK_BLOCKED"
                                 elif skip_if_open_order and has_open_order_for_symbol(orders, sym):
@@ -2988,6 +3037,14 @@ def main() -> None:
                         pass
                 last_decision_snapshot_ts = time.time()
 
+            if render_usage_policy in {"WARN", "SAVE", "STRONG", "HARD", "OVER"}:
+                _pct = render_usage.get("percent") if isinstance(render_usage, dict) else None
+                notes.append(
+                    f"Render usage guard {render_usage_policy}"
+                    + (f" ({float(_pct):.1f}%)" if isinstance(_pct, (int, float)) else "")
+                    + (" - new entries blocked" if usage_entry_blocked else "")
+                )
+
             out = {
                 "version": runtime_bot_version(),
                 "build_id": os.getenv("RENDER_GIT_COMMIT", "local")[:12],
@@ -3043,6 +3100,13 @@ def main() -> None:
                 "minutes_to_regular_close": None if minutes_to_close is None else round(minutes_to_close, 1),
                 "entry_close_window": entry_close_window,
                 "flatten_close_window": flatten_close_window,
+                "render_usage": {
+                    **(render_usage if isinstance(render_usage, dict) else {}),
+                    "guard_enabled": bool(render_usage_guard_enabled),
+                    "new_entries_blocked": bool(usage_entry_blocked),
+                    "effective_poll_sec": int(poll_sec),
+                    "effective_bars_refresh_sec": int(refresh_bars_every_sec),
+                },
                 "cloud_runtime": {
                     "render": str(os.getenv("RENDER", "")).lower() == "true",
                     "render_cpu_count": os.getenv("RENDER_CPU_COUNT", ""),
@@ -3093,6 +3157,14 @@ def main() -> None:
         try:
             if isinstance(control, dict):
                 poll_sec = max(1, int(control.get("poll_sec", 2)))
+            _usage = read_usage(os.path.join(STATE_DIR, "render_usage.json"))
+            _policy = str((_usage or {}).get("policy") or "UNMETERED").upper()
+            if _policy == "SAVE":
+                poll_sec = max(poll_sec, 2)
+            elif _policy == "STRONG":
+                poll_sec = max(poll_sec, 3)
+            elif _policy in {"HARD", "OVER"}:
+                poll_sec = max(poll_sec, 5)
         except Exception:
             poll_sec = 2
 
