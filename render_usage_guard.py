@@ -53,13 +53,19 @@ def _int_env(name: str, default: int) -> int:
         return int(default)
 
 
+def _render_time(dt: datetime) -> str:
+    # Render's metrics endpoint documents RFC3339/date-time values and examples
+    # use a Z suffix. Emit second precision to avoid parser-specific 400 errors.
+    return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
 def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return _render_time(datetime.now(timezone.utc))
 
 
 def _month_start_iso() -> str:
     now = datetime.now(timezone.utc)
-    return datetime(now.year, now.month, 1, tzinfo=timezone.utc).isoformat()
+    return _render_time(datetime(now.year, now.month, 1, tzinfo=timezone.utc))
 
 
 def _configured_resource_ids() -> List[str]:
