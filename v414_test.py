@@ -76,10 +76,12 @@ class StabilityTests(unittest.TestCase):
         self.assertEqual(cb._failures, 0)
 
     def test_render_boundaries(self):
-        for pct, expected in [(59.99, 'NORMAL'), (60, 'WARN'), (75, 'SAVE'), (85, 'STRONG'), (95, 'HARD'), (100, 'OVER')]:
+        for pct, expected in [(59.99, 'NORMAL'), (60, 'WARN'), (75, 'SAVE'), (85, 'STRONG'), (89.99, 'STRONG'), (90, 'STRONG'), (95, 'HARD'), (100, 'OVER')]:
             self.assertEqual(policy_for_percent(pct), expected)
             Path(self.tmp.name, 'render_usage.json').write_text(json.dumps({'percent': pct}))
-            self.assertEqual(self.sx._render_allows_norway(), pct < 60)
+            self.assertEqual(self.sx._render_allows_norway(), pct < 90)
+        self.assertEqual(self.sx._status()['render_pause_pct'], 90.0)
+        self.assertEqual(self.sx._status()['render_gate'], 'PAUSED_AT_90_PERCENT')
         self.assertEqual(self.sx.refresh_once()['state'], 'RENDER_GUARD')
         self.sx.session.request.assert_not_called()
 

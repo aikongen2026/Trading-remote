@@ -7,7 +7,7 @@ Safety invariants:
 - Never reads/accepts a LIVE base URL.
 - Disabled unless SAXO_SIM_ENABLED=true and SIM credentials are present.
 - Uses the main TradingBot armed/paused/kill controls.
-- Pauses new Norway traffic at Render WARN (60% by default).
+- Pauses new Norway traffic at 90% Render bandwidth usage.
 - Has its own daily/monthly response-byte budget as a second cost guard.
 
 This module is deliberately independent from Alpaca execution. It writes its
@@ -178,8 +178,8 @@ class SaxoSimEngine:
             pct = float((usage or {}).get("percent"))
         except Exception:
             return True
-        # Norway sidecar pauses already at WARN. The main engine can continue.
-        return pct < 60.0
+        # Norway sidecar pauses at 90%; the main engine keeps its own guard.
+        return pct < 90.0
 
     def _record_bytes(self, request_bytes: int, response_bytes: int) -> None:
         self._budget_rollover()
@@ -229,7 +229,7 @@ class SaxoSimEngine:
         if not self._budget_ok():
             raise SaxoSimError("SAXO_TRAFFIC_BUDGET")
         if not self._render_allows_norway():
-            raise SaxoSimError("RENDER_WARN_PAUSE")
+            raise SaxoSimError("RENDER_NORWAY_PAUSE")
         if not self.access_token and not self._refresh_access_token():
             raise SaxoSimError("SAXO_SIM_TOKEN_MISSING")
 
@@ -446,7 +446,8 @@ class SaxoSimEngine:
             "monthly_budget_mb": self.monthly_budget_mb,
             "traffic_day_mb": round(self.bytes_day / (1024 * 1024), 4),
             "traffic_month_mb": round(self.bytes_month / (1024 * 1024), 4),
-            "render_gate": "OPEN" if self._render_allows_norway() else "PAUSED_AT_60_PERCENT",
+            "render_pause_pct": 90.0,
+            "render_gate": "OPEN" if self._render_allows_norway() else "PAUSED_AT_90_PERCENT",
             "oslo_session": "OPEN" if self._oslo_open() else "CLOSED",
             "last_update": _now_iso(),
         }
@@ -464,7 +465,7 @@ class SaxoSimEngine:
             _write_json(self.state_path, state)
             return state
         if not self._render_allows_norway():
-            state = self._status(state="RENDER_GUARD", note="Norway SIM paused at Render >=60%.")
+            state = self._status(state="RENDER_GUARD", note="Norway SIM paused at Render >=90%.")
             _write_json(self.state_path, state)
             return state
         if not self._budget_ok():
@@ -565,7 +566,7 @@ class SaxoSimEngine:
             self._last_log = marker
 
     def run(self) -> None:
-        log.warning("SAXO_SIM startup environment=SIM enabled=%s poll_sec=%s render_pause_pct=60", self.enabled, self.poll_sec)
+        log.warning("SAXO_SIM startup environment=SIM enabled=%s poll_sec=%s render_pause_pct=90", self.enabled, self.poll_sec)
         while not self.stop_event.is_set():
             try:
                 state = self.refresh_once()
