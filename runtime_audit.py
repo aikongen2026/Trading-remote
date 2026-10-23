@@ -23,6 +23,11 @@ def storage_health(state_dir):
     render = str(os.getenv('RENDER', '')).lower() == 'true'
     resolved = Path(state_dir).resolve()
     persistent = not render
+    # The blueprint declares /var/data as the disk mount. Render containers
+    # may not expose it through ismount; use a strict resolved descendant check.
+    disk = Path('/var/data').resolve()
+    if render and os.name != 'nt' and disk.is_dir() and resolved.is_relative_to(disk):
+        persistent = True
     if render and os.name != 'nt':
         for parent in (resolved, *resolved.parents):
             if str(parent) == '/':

@@ -555,7 +555,10 @@ class AlpacaApiError(RuntimeError):
 
 class AlpacaRest:
     def __init__(self, cfg: BotCfg) -> None:
+        if not cfg.paper or cfg.trading_base.rstrip("/") != "https://paper-api.alpaca.markets":
+            raise RuntimeError("PAPER_ONLY_BLOCK: live Alpaca endpoint refused")
         self.cfg = cfg
+        self._cooldowns = {}
         self.s = requests.Session()
         adapter = requests.adapters.HTTPAdapter(pool_connections=64, pool_maxsize=64, max_retries=0)
         self.s.mount("https://", adapter)
@@ -578,20 +581,19 @@ class AlpacaRest:
         timeout: Tuple[int, int] = (4, 20),
         allow_404: bool = False,
     ) -> Any:
+        if "api.alpaca.markets" in url and not url.startswith("https://paper-api.alpaca.markets/"):
+            raise RuntimeError("PAPER_ONLY_BLOCK: live Alpaca endpoint refused")
+        if time.monotonic() < self._cooldowns.get(url, 0):
+            raise AlpacaApiError(429, "Endpoint circuit open; waiting for rate-limit cooldown")
         last_error: Optional[Exception] = None
         for attempt in range(3):
             try:
-                r = self.s.request(method, url, params=params, json=json_body, timeout=timeout)
-                if r.status_code == 429 and attempt < 2:
-                    retry_after = r.headers.get("Retry-After")
-                    delay = 0.75 * (attempt + 1)
-                    if retry_after:
-                        try:
-                            delay = max(delay, min(10.0, float(retry_after)))
-                        except Exception:
-                            pass
-                    time.sleep(delay)
-                    continue
+                r = self.s.request(method, url, params=params, json=json_body, timeout=timeout, allow_redirects=False)
+                if r.status_code == 429:
+                    from corporate_backoff import retry_seconds
+                    delay = max(60.0, retry_seconds(r.headers.get("Retry-After")))
+                    self._cooldowns[url] = time.monotonic() + delay
+                    raise AlpacaApiError(429, {"message": "Rate limited", "retry_in_sec": delay})
                 if allow_404 and r.status_code == 404:
                     return None
                 if r.status_code in (401, 403):
@@ -599,7 +601,7 @@ class AlpacaRest:
                         f"Alpaca authentication failed ({r.status_code}). "
                         "Check PAPER/LIVE API keys with SETUP_ALPACA_KEYS.bat."
                     )
-                if r.status_code >= 400:
+                if r.status_code >= 300:
                     try:
                         msg = r.json()
                     except Exception:
@@ -608,9 +610,11 @@ class AlpacaRest:
                 if r.text.strip() == "":
                     return None
                 return r.json()
+            except (AlpacaApiError, AlpacaAuthError):
+                raise
             except Exception as e:
                 last_error = e
-                if attempt == 2:
+                if method.upper() != "GET" or attempt == 2:
                     raise
                 time.sleep(0.20 * (attempt + 1))
         raise RuntimeError(f"Request failed unexpectedly: {last_error}")
@@ -774,12 +778,12 @@ class AlpacaRest:
             "symbols": ",".join(sorted({str(s).upper() for s in symbols if str(s).strip()})),
             "start": start_date,
             "end": end_date,
-            "cas_region": "us",
             "limit": 1000,
         }
         if types:
             params["types"] = ",".join(types)
-        data = self._req("GET", f"{self.cfg.data_base}/v1/corporate-actions", params=params)
+        from corporate_backoff import corporate_get
+        data = corporate_get(self.s, f"{self.cfg.data_base}/v1/corporate-actions", params)
         return data if isinstance(data, dict) else {}
 
     def bars(
@@ -1839,6 +1843,7 @@ def main() -> None:
                 if (now_api - cached_profit_history["ts"]) >= 60.0:
                     future_map[pool.submit(api.portfolio_history, "7D", "1H")] = "profit_history"
                 if corporate_actions_enabled and stocks and (now_api - cached_corporate_actions["ts"]) >= 900.0:
+                    cached_corporate_actions["ts"] = now_api  # Also throttle failed attempts.
                     _ca_start = eastern_now().date()
                     _ca_end = _ca_start + timedelta(days=corporate_action_lookahead_days)
                     _ca_types = [

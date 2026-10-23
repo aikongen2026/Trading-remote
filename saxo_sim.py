@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import threading
 import time
@@ -28,6 +29,8 @@ from zoneinfo import ZoneInfo
 
 import requests
 
+
+log = logging.getLogger(__name__)
 
 SIM_BASE = "https://gateway.saxobank.com/sim/openapi"
 SIM_TOKEN_URL = "https://sim.logonvalidation.net/token"
@@ -108,6 +111,10 @@ class SaxoSimEngine:
         self.refresh_token = str(os.getenv("SAXO_SIM_REFRESH_TOKEN") or "").strip()
         self.app_key = str(os.getenv("SAXO_SIM_APP_KEY") or "").strip()
         self.app_secret = str(os.getenv("SAXO_SIM_APP_SECRET") or "").strip()
+        self.account_connected = False
+        self.last_successful_poll = None
+        self._last_log = None
+        self.cooldown_until = 0.0
         self.account_key = str(os.getenv("SAXO_SIM_ACCOUNT_KEY") or "").strip()
 
         self.poll_sec = _int_env("SAXO_SIM_POLL_SEC", 120, 60, 900)
@@ -137,6 +144,11 @@ class SaxoSimEngine:
         self.bytes_month = 0
         self.day_key = ""
         self.month_key = ""
+        saved = _read_json(self.state_dir / "saxo_sim_traffic.json", {})
+        self.day_key = saved.get("day_key", "")
+        self.month_key = saved.get("month_key", "")
+        self.bytes_day = int(saved.get("bytes_day", 0))
+        self.bytes_month = int(saved.get("bytes_month", 0))
 
     @property
     def configured(self) -> bool:
@@ -174,8 +186,14 @@ class SaxoSimEngine:
         amount = max(0, request_bytes) + max(0, response_bytes)
         self.bytes_day += amount
         self.bytes_month += amount
+        _write_json(self.state_dir / "saxo_sim_traffic.json", {
+            "day_key": self.day_key, "month_key": self.month_key,
+            "bytes_day": self.bytes_day, "bytes_month": self.bytes_month,
+        })
 
     def _refresh_access_token(self) -> bool:
+        if not self._render_allows_norway() or not self._budget_ok():
+            raise SaxoSimError("SAXO_SIM_TOKEN_REFRESH_GUARD")
         if not (self.refresh_token and self.app_key and self.app_secret):
             return False
         raw = f"{self.app_key}:{self.app_secret}".encode("utf-8")
@@ -184,11 +202,11 @@ class SaxoSimEngine:
             SIM_TOKEN_URL,
             headers={"Authorization": f"Basic {auth}", "Content-Type": "application/x-www-form-urlencoded"},
             data={"grant_type": "refresh_token", "refresh_token": self.refresh_token},
-            timeout=20,
+            timeout=20, allow_redirects=False,
         )
         self._record_bytes(len(str(r.request.body or "")), len(r.content or b""))
-        if r.status_code >= 400:
-            return False
+        if r.status_code >= 300:
+            raise SaxoSimError(f"SAXO_SIM_TOKEN_REFRESH_HTTP_{r.status_code}")
         data = r.json()
         token = str(data.get("access_token") or "").strip()
         if not token:
@@ -204,8 +222,10 @@ class SaxoSimEngine:
         if not path.startswith("/"):
             path = "/" + path
         url = SIM_BASE + path
-        if "/sim/openapi" not in url or "live" in url.lower():
+        if SIM_BASE != "https://gateway.saxobank.com/sim/openapi" or not url.startswith("https://gateway.saxobank.com/sim/openapi/") or "live" in url.lower():
             raise SaxoSimError("SAXO_SIM_ONLY: live endpoint refused")
+        if time.monotonic() < self.cooldown_until:
+            raise SaxoSimError("SAXO_SIM_RATE_LIMIT: cooldown active")
         if not self._budget_ok():
             raise SaxoSimError("SAXO_TRAFFIC_BUDGET")
         if not self._render_allows_norway():
@@ -217,12 +237,15 @@ class SaxoSimEngine:
             "Authorization": f"Bearer {self.access_token}",
             "Accept": "application/json",
         }
-        r = self.session.request(method, url, params=params, json=body, headers=headers, timeout=25)
+        r = self.session.request(method, url, params=params, json=body, headers=headers, timeout=25, allow_redirects=False)
         req_size = len(json.dumps(body, ensure_ascii=False).encode("utf-8")) if body is not None else 0
         self._record_bytes(req_size, len(r.content or b""))
         if r.status_code == 401 and retry_auth and self._refresh_access_token():
             return self._request(method, path, params=params, body=body, retry_auth=False)
-        if r.status_code >= 400:
+        if r.status_code == 429:
+            from corporate_backoff import retry_seconds
+            self.cooldown_until = time.monotonic() + max(300, retry_seconds(r.headers.get("Retry-After")))
+        if r.status_code >= 300:
             detail = ""
             try:
                 detail = json.dumps(r.json(), ensure_ascii=False)[:500]
@@ -232,16 +255,17 @@ class SaxoSimEngine:
         return r.json() if r.content else {}
 
     def _discover_account(self) -> None:
-        if self.account_key:
-            return
+        self.account_connected = False
         data = self._request("GET", "/port/v1/accounts/me", params={"$top": 50})
         rows = data.get("Data") if isinstance(data, dict) else None
         for row in rows or []:
             if bool(row.get("Active", True)) and row.get("AccountKey"):
+                if self.account_key and self.account_key != str(row["AccountKey"]):
+                    continue
                 self.account_key = str(row["AccountKey"])
-                break
-        if not self.account_key:
-            raise SaxoSimError("No active Saxo SIM account found")
+                self.account_connected = True
+                return
+        raise SaxoSimError("SAXO_SIM_ACCOUNT_NOT_FOUND: configured account missing or inactive")
 
     @staticmethod
     def _is_norway_stock(row: Dict[str, Any], wanted: str) -> bool:
@@ -281,6 +305,7 @@ class SaxoSimEngine:
                     "exchange_id": selected.get("ExchangeId") or "",
                     "exchange_name": selected.get("ExchangeName") or "",
                 }
+        self.instrument_cache = {k: v for k, v in self.instrument_cache.items() if k in self.symbols}
         _write_json(self.cache_path, self.instrument_cache)
 
     def _prices(self) -> Dict[int, Dict[str, Any]]:
@@ -405,6 +430,9 @@ class SaxoSimEngine:
 
     def _status(self, **extra: Any) -> Dict[str, Any]:
         base = {
+            "account_connected": self.account_connected,
+            "positions": len(self.positions),
+            "last_successful_poll": self.last_successful_poll,
             "enabled": self.enabled,
             "configured": self.configured,
             "paper": True,
@@ -448,6 +476,7 @@ class SaxoSimEngine:
         self._discover_instruments()
         prices = self._prices() if self._oslo_open() else {}
         positions = self._load_positions()
+        log.info("SAXO_SIM account_confirmed=true symbols_resolved=%s positions=%s", len(self.instrument_cache), len(positions))
         rows: Dict[str, Any] = {}
 
         for symbol, inst in self.instrument_cache.items():
@@ -515,9 +544,10 @@ class SaxoSimEngine:
                 "action": action,
             }
 
+        self.last_successful_poll = _now_iso()
         state = self._status(
-            state="RUNNING_SIM",
-            account_connected=bool(self.account_key),
+            state="RUNNING_SIM" if self.instrument_cache else "NO_RESOLVED_SYMBOLS",
+            account_connected=self.account_connected,
             positions=len(positions),
             symbols=rows,
             note="Saxo simulation only. LIVE endpoints are hard-blocked.",
@@ -525,16 +555,29 @@ class SaxoSimEngine:
         _write_json(self.state_path, state)
         return state
 
+    def _log_status(self, state):
+        marker = (state.get("state"), state.get("error"))
+        if marker != self._last_log or state.get("state") == "RUNNING_SIM":
+            log.warning("SAXO_SIM state=%s account_connected=%s symbols=%s/%s positions=%s traffic_day_mb=%s traffic_month_mb=%s last_poll=%s error=%s",
+                        state.get("state"), state.get("account_connected"), state.get("symbols_resolved"),
+                        state.get("symbols_requested"), state.get("positions"), state.get("traffic_day_mb"),
+                        state.get("traffic_month_mb"), state.get("last_successful_poll"), state.get("error", state.get("note", "")))
+            self._last_log = marker
+
     def run(self) -> None:
+        log.warning("SAXO_SIM startup environment=SIM enabled=%s poll_sec=%s render_pause_pct=60", self.enabled, self.poll_sec)
         while not self.stop_event.is_set():
             try:
-                self.refresh_once()
+                state = self.refresh_once()
             except Exception as exc:
-                _write_json(self.state_path, self._status(
+                self.account_connected = False
+                state = self._status(
                     state="ERROR",
                     error=f"{type(exc).__name__}: {str(exc)[:400]}",
                     note="Saxo SIM side engine failed closed; Alpaca PAPER engine is unaffected.",
-                ))
+                )
+                _write_json(self.state_path, state)
+            self._log_status(state)
             self.stop_event.wait(self.poll_sec)
 
     def start(self) -> None:
