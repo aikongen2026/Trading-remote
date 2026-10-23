@@ -2319,7 +2319,7 @@ HTML = r"""\n<!doctype html>
         grid-template-rows:minmax(82px,9.5vh) auto minmax(330px,43vh) minmax(210px,30vh) 30px !important;
         overflow:visible !important;
       }
-      .kpiStrip{height:auto !important;grid-auto-rows:minmax(84px,auto) !important}
+      .kpiStrip{height:auto !important;grid-template-columns:repeat(7,minmax(0,1fr)) !important;grid-auto-rows:minmax(84px,auto) !important}
       .kpiCard{height:auto !important;min-height:84px !important}
       .saxoKpi{
         grid-column:span 6;
