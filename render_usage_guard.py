@@ -12,7 +12,7 @@ Required for automatic metering on Render:
 
 RENDER_SERVICE_ID is provided automatically by Render. Multiple resource IDs
 can be supplied with RENDER_USAGE_RESOURCE_IDS=srv-a,srv-b when the workspace
-contains several bandwidth-consuming services.
+contains several bandwidth-consuming services in the same workspace.
 
 Optional:
   RENDER_BANDWIDTH_CAP_GB=5
@@ -133,6 +133,7 @@ class RenderUsageGuard:
         self.session = requests.Session()
         self.api_key = str(os.getenv("RENDER_API_KEY") or "").strip()
         self.resources = _configured_resource_ids()
+        self.workspace_owner_id = None
         self.cap_gb = max(0.1, _float_env("RENDER_BANDWIDTH_CAP_GB", 5.0))
         self.check_sec = max(300, _int_env("RENDER_USAGE_CHECK_SEC", 900))
 
@@ -147,7 +148,7 @@ class RenderUsageGuard:
         }
 
     def _discover_resource_ids(self) -> List[str]:
-        """Discover every service visible to the Render API key.
+        """Discover services in the current service's workspace.
 
         Included bandwidth is workspace-level, so monitoring only the current
         TradingBot service can understate billable usage. An explicit
@@ -157,6 +158,7 @@ class RenderUsageGuard:
             return list(self.resources)
 
         ids: List[str] = []
+        owners: Dict[str, str] = {}
         cursor = ""
         seen_cursors: set[str] = set()
         for _ in range(50):
@@ -178,6 +180,7 @@ class RenderUsageGuard:
                 sid = str((service or {}).get("id") or "").strip()
                 if sid:
                     ids.append(sid)
+                    owners[sid] = str(service.get("ownerId") or "")
                 rc = str(row.get("cursor") or "").strip()
                 if rc:
                     next_cursor = rc
@@ -187,9 +190,16 @@ class RenderUsageGuard:
             cursor = next_cursor
 
         current = str(os.getenv("RENDER_SERVICE_ID") or "").strip()
-        if current:
-            ids.append(current)
-        return list(dict.fromkeys(ids))
+        owner = owners.get(current)
+        if not owner:
+            known = set(owners.values()) - {""}
+            if current or len(known) != 1 or any(not v for v in owners.values()):
+                raise ValueError("Cannot identify TradingBot Render workspace; set RENDER_USAGE_RESOURCE_IDS explicitly")
+            owner = next(iter(known))
+        self.workspace_owner_id = owner
+        # Render rejects a metrics request spanning multiple owners. Included
+        # bandwidth is workspace-scoped, so unrelated owners must be excluded.
+        return list(dict.fromkeys(sid for sid in ids if owners.get(sid) == owner))
 
     def _request_series(self, resources: List[str]) -> list[dict[str, Any]]:
         params: list[tuple[str, str]] = [
@@ -232,7 +242,7 @@ class RenderUsageGuard:
             "source": "render_api" if self.configured else "not_configured",
             "cap_gb": round(self.cap_gb, 3),
             "resources": list(self.resources),
-            "scope": "configured_services" if self.resources else "all_visible_services",
+            "scope": "configured_services" if self.resources else "current_workspace_services",
             "warn_pct": _float_env("RENDER_USAGE_WARN_PCT", 60.0),
             "save_pct": _float_env("RENDER_USAGE_SAVE_PCT", 75.0),
             "strong_pct": _float_env("RENDER_USAGE_STRONG_PCT", 85.0),
@@ -257,6 +267,7 @@ class RenderUsageGuard:
         try:
             resources = self._discover_resource_ids()
             base["resources"] = resources
+            base["workspace_owner_id"] = self.workspace_owner_id
             base["service_count"] = len(resources)
             used_gb = self._sum_series_gb(self._request_series(resources))
             percent = (used_gb / self.cap_gb) * 100.0

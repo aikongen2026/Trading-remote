@@ -92,6 +92,21 @@ class StabilityTests(unittest.TestCase):
         status = guard.snapshot()
         self.assertEqual((status['percent'], status['policy']), (85, 'STRONG'))
 
+    def test_render_discovery_excludes_other_workspace(self):
+        os.environ["RENDER_SERVICE_ID"] = "srv-current"
+        guard = RenderUsageGuard(self.tmp.name)
+        guard.session = Mock()
+        guard.session.get.return_value.json.return_value = [
+            {"service": {"id": "srv-current", "ownerId": "team-a"}},
+            {"service": {"id": "srv-neighbor", "ownerId": "team-a"}},
+            {"service": {"id": "srv-unrelated", "ownerId": "team-b"}},
+        ]
+        self.assertEqual(guard._discover_resource_ids(), ["srv-current", "srv-neighbor"])
+        self.assertEqual(guard.workspace_owner_id, "team-a")
+        os.environ["RENDER_SERVICE_ID"] = "srv-unknown"
+        with self.assertRaisesRegex(ValueError, "Cannot identify"):
+            guard._discover_resource_ids()
+
     def test_saxo_live_block(self):
         with patch('saxo_sim.SIM_BASE', 'https://gateway.saxobank.com/openapi'):
             with self.assertRaisesRegex(SaxoSimError, 'live endpoint refused'):
