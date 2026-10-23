@@ -2305,6 +2305,32 @@ HTML = r"""\n<!doctype html>
         overflow:auto !important;
       }
     }
+    /* V4.14: nine KPI cards and SIM details need intrinsic row heights. */
+    #saxoDetails{overflow-wrap:anywhere}
+    @media (min-width:1081px){
+      html,body{height:auto !important;overflow-y:auto !important}
+      .wrap{
+        display:grid !important;
+        width:calc(100vw - 60px) !important;
+        min-width:0 !important;
+        margin:0 0 0 58px !important;
+        height:auto !important;
+        min-height:100vh !important;
+        grid-template-rows:minmax(82px,9.5vh) auto minmax(330px,43vh) minmax(210px,30vh) 30px !important;
+        overflow:visible !important;
+      }
+      .kpiStrip{height:auto !important;grid-auto-rows:minmax(84px,auto) !important}
+      .kpiCard{height:auto !important;min-height:84px !important}
+      .saxoKpi{
+        grid-column:span 6;
+        display:grid;
+        grid-template-columns:160px minmax(0,1fr);
+        column-gap:16px;
+        align-content:center;
+      }
+      .saxoKpi .kpiHead,.saxoKpi .kpiValue{grid-column:1}
+      .saxoKpi #saxoDetails{grid-column:2;grid-row:1/span 2;align-self:center}
+    }
 </style>
 </head>
 <body>
@@ -2353,7 +2379,7 @@ HTML = r"""\n<!doctype html>
     <div class="kpiCard"><div class="kpiHead"><span class="kpiIcon">☁</span>Cloud 24/7</div><div id="kpi_cloud" class="kpiValue">-</div></div>
     <div class="kpiCard"><div class="kpiHead"><span class="kpiIcon">⇅</span>Render data</div><div id="kpi_usage" class="kpiValue">-</div></div>
     <div class="kpiCard"><div class="kpiHead"><span class="kpiIcon">A</span>Alpaca</div><div id="kpi_alpaca" class="kpiValue">-</div></div>
-    <div class="kpiCard"><div class="kpiHead"><span class="kpiIcon">NO</span>Norge SIM</div><div id="kpi_saxo" class="kpiValue">-</div><div id="saxoDetails" style="font-size:12px;white-space:pre-line"></div></div>
+    <div class="kpiCard saxoKpi"><div class="kpiHead"><span class="kpiIcon">NO</span>Norge SIM</div><div id="kpi_saxo" class="kpiValue">-</div><div id="saxoDetails" style="font-size:12px;white-space:pre-line"></div></div>
     <div class="kpiCard"><div class="kpiHead"><span class="kpiIcon">◷</span>Sist oppdatert</div><div id="kpi_updated" class="kpiValue">-</div></div>
   </section>
 
