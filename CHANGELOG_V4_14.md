@@ -2,7 +2,7 @@
 
 - Preserve ALPACA_PAPER=true and TRADINGBOT_PAPER_ONLY=true in the Render blueprint. Refuse live Alpaca clients and live REST endpoints regardless of environment overrides. Never retry ambiguous order mutations.
 - Keep Saxo fixed to SIM, refuse redirected requests, confirm the configured account against Saxo, and show state, connection, resolved/requested symbols, positions, daily/monthly traffic and last successful poll in the dashboard. No resolved instruments means NO_RESOLVED_SYMBOLS, not RUNNING_SIM.
-- Emit SAXO_SIM startup, state transition/error and successful poll summaries in Render logs. Keep the 60% Norway traffic cutoff and persist Saxo byte counters across restarts.
+- Emit SAXO_SIM startup, state transition/error and successful poll summaries in Render logs. Keep the 90% Norway traffic cutoff (raised from 60% at user request) and persist Saxo byte counters across restarts.
 - Remove unsupported cas_region. Both corporate-action collectors share a circuit with one recovery probe, no immediate retries, 15-minute minimum failure delay, exponential backoff up to two hours, and Retry-After support. Preserve previously collected corporate-action vetoes on failure. Failed main-loop refreshes are also scheduled no more than once per 15 minutes.
 - Render usage discovery is scoped to the current service owner/workspace. A key with access to multiple workspaces no longer produces a mixed-owner HTTP 400; ambiguous ownership fails explicitly.
 - Main-loop heartbeat logs are limited to once per minute; status files remain current. Local cooldown refusals do not consume the shared REST call budget or inflate HTTP 429 counts.
