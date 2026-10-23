@@ -1630,6 +1630,7 @@ def main() -> None:
     entry_confirmation = EntryConfirmation()
     soft_exit_since: Dict[str, Tuple[str, float]] = {}
     last_decision_snapshot_ts = 0.0
+    last_heartbeat_ts = 0.0
 
     while True:
         loop_start = time.time()
@@ -3175,11 +3176,14 @@ def main() -> None:
             }
             safe_write_json(STATUS_PATH, out)
 
-            print(
-                f"{utc_now_iso()} | INFO | Heartbeat: market={market_mode} stock_session={stock_session} mode={strategy_mode} symbols={len(symbols_state)} "
-                f"armed={armed} paused={paused} TEST={test_mode} orders={len(orders)} "
-                f"poll={poll_sec}s bars_refresh={refresh_bars_every_sec}s notes={out['notes']}"
-            )
+            # Disk status stays current each loop; emit a log summary once/minute.
+            if time.monotonic() - last_heartbeat_ts >= 60:
+                last_heartbeat_ts = time.monotonic()
+                print(
+                    f"{utc_now_iso()} | INFO | Heartbeat: market={market_mode} stock_session={stock_session} mode={strategy_mode} symbols={len(symbols_state)} "
+                    f"armed={armed} paused={paused} TEST={test_mode} orders={len(orders)} "
+                    f"poll={poll_sec}s bars_refresh={refresh_bars_every_sec}s notes={out['notes']}"
+                )
 
         except Exception as e:
             err = f"{utc_now_iso()} | ERROR | {e}"

@@ -722,6 +722,10 @@ class AlpacaEdgeV49:
             supervisor = self
 
             def budgeted_req(api_self: Any, method: str, url: str, **kwargs: Any) -> Any:
+                # Local circuit refusals consume no API quota and must not delay
+                # position protection or inflate the real HTTP 429 counter.
+                if time.monotonic() < api_self._cooldowns.get(url, 0):
+                    return orig_req(api_self, method, url, **kwargs)
                 supervisor.budget.before(url)
                 try:
                     return orig_req(api_self, method, url, **kwargs)
