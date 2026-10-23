@@ -452,11 +452,8 @@ class CorporateActionGuard:
             params = dict(params_base)
             params["symbols"] = ",".join(symbols[i:i+45])
             self.budget.before("corporate-actions")
-            r = self.s.get("https://data.alpaca.markets/v1/corporate-actions", params=params, timeout=(4, 20))
-            if r.status_code == 429:
-                self.budget.note_429()
-            r.raise_for_status()
-            data = r.json() if r.text.strip() else {}
+            from corporate_backoff import corporate_get
+            data = corporate_get(self.s, "https://data.alpaca.markets/v1/corporate-actions", params)
             if not isinstance(data, dict):
                 continue
             for bucket, arr in data.items():

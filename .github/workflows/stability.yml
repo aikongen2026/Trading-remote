@@ -1,0 +1,17 @@
+name: Stability guards
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  offline-guards:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r requirements.txt ruff
+      - run: python -m unittest v414_test -v
+      - run: python safety_test.py
+      - run: python -m compileall -q .
+      - run: ruff check --select E9,F63,F7,F82 corporate_backoff.py saxo_sim.py runtime_audit.py trading_bot.py alpaca_v49.py control_server.py v414_test.py
