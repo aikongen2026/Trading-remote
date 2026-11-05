@@ -12,11 +12,11 @@ DASHBOARD_PASSWORD and DASHBOARD_SECRET_KEY as environment secrets.
 from __future__ import annotations
 
 import hmac
-import io
 import json
 import os
 import secrets
 import time
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict
@@ -58,6 +58,7 @@ app.config.update(
 
 _LOGIN_ATTEMPTS: Dict[str, list[float]] = {}
 _PROFIT_TRADES_CACHE: Dict[int, tuple[float, Dict[str, Any]]] = {}
+_EXPORT_LOCK = threading.Lock()
 
 
 def utc_now_iso() -> str:
@@ -2627,17 +2628,31 @@ def api_export():
         days = 7
     if days < 1 or days > 30:
         return jsonify({"ok": False, "error": "days_must_be_1_to_30"}), 400
+    if not _EXPORT_LOCK.acquire(blocking=False):
+        response = jsonify({"ok": False, "error": "export_in_progress", "detail": "En analysefil bygges allerede. Vent til den er ferdig og prov igjen."})
+        response.status_code = 429
+        response.headers["Retry-After"] = "30"
+        return response
+    export_file = None
     try:
-        from trade_export import build_ai_analysis_export
-        blob, manifest = build_ai_analysis_export(days, STATE_DIR, BOT_VERSION)
+        from trade_export import build_ai_analysis_export_file
+        export_file, manifest = build_ai_analysis_export_file(days, STATE_DIR, BOT_VERSION)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         filename = f"TradingBot_AI_ANALYSE_{days}d_{stamp}UTC.zip"
-        resp = send_file(io.BytesIO(blob), mimetype="application/zip", as_attachment=True, download_name=filename, max_age=0)
+        resp = send_file(export_file, mimetype="application/zip", as_attachment=True, download_name=filename, max_age=0, conditional=False)
+        export_file.seek(0, 2)
+        resp.content_length = export_file.tell()
+        export_file.seek(0)
+        resp.call_on_close(export_file.close)
         resp.headers["Cache-Control"] = "no-store, max-age=0"
         resp.headers["X-TradingBot-Export-Version"] = str(manifest.get("export_schema") or "")
         return resp
     except Exception as exc:
+        if export_file is not None:
+            export_file.close()
         return jsonify({"ok": False, "error": "export_failed", "detail": str(exc)[:500]}), 500
+    finally:
+        _EXPORT_LOCK.release()
 
 
 @app.post("/api/test_buy")
@@ -2658,3 +2673,4 @@ if __name__ == "__main__":
     host = os.getenv("DASHBOARD_BIND", "127.0.0.1")
     port = int(os.getenv("PORT", os.getenv("DASHBOARD_PORT", "5050")))
     app.run(host=host, port=port, debug=False, threaded=True)
+

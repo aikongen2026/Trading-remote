@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 import io, json, zipfile, tempfile
+from unittest.mock import patch
 from pathlib import Path
 import trade_export
 from execution_guard import make_client_order_id
@@ -11,7 +12,8 @@ def check(cond, msg):
         raise AssertionError(msg)
     print('OK:', msg)
 
-cid=make_client_order_id('tbe-','STOCK','AAPL')
+with patch('execution_guard.Path.read_text', return_value='4.7.0'):
+    cid=make_client_order_id('tbe-','STOCK','AAPL')
 check(cid.startswith('tbe-sv470-'), 'new client order ids include revision tag')
 check(trade_export._client_version_tag(cid)=='v470', 'revision tag can be recovered from client order id')
 
@@ -41,8 +43,20 @@ with zipfile.ZipFile(mem,'w',zipfile.ZIP_DEFLATED) as z:
     z.writestr('07_fees.csv','')
     z.writestr('08_portfolio_history.csv','')
     z.writestr('09_bot_decisions.csv','symbol,ts,action\nABC,2026-10-12T10:01:00Z,BUY 1 BRACKET\n')
-orig=trade_export.build_analysis_export
-trade_export.build_analysis_export=lambda *a,**k:(mem.getvalue(),legacy_files['00_manifest.json'])
+orig=trade_export._collect_analysis_data
+def collect_fixture(*args, **kwargs):
+    with zipfile.ZipFile(io.BytesIO(mem.getvalue())) as z:
+        def rows(name):
+            return trade_export._csv_payload_rows(z.read(name))
+        return {
+            'manifest': legacy_files['00_manifest.json'], 'summary': legacy_files['01_summary.json'],
+            'keep_account': legacy_files['02_account_snapshot.json'], 'positions': [],
+            'orders': legacy_files['04_orders.json'], 'activities': legacy_files['05_activities.json'],
+            'history': {}, 'status': legacy_files['10_status_snapshot.json'], 'control': {},
+            'execution_state': {}, 'trade_plans': {}, 'decisions': rows('09_bot_decisions.csv'),
+            'fills': rows('06_fills.csv'), 'fees': [], 'portfolio_rows': [],
+        }
+trade_export._collect_analysis_data=collect_fixture
 try:
     
     class FakeBars:
@@ -51,7 +65,7 @@ try:
         def crypto_bars(self,*a,**k): return {}
     blob,manifest=trade_export.build_ai_analysis_export(1,'.','4.4.2-ai-audit',api=FakeBars())
 finally:
-    trade_export.build_analysis_export=orig
+    trade_export._collect_analysis_data=orig
 with zipfile.ZipFile(io.BytesIO(blob)) as z:
     check(z.namelist()==['AI_ANALYSE.json'],'AI export contains one uploadable analysis file')
     p=json.loads(z.read('AI_ANALYSE.json'))
@@ -60,3 +74,4 @@ check(p['diagnostics']['all_matched_trades']['gross_pnl_usd']==1.0,'AI diagnosti
 check(p['completed_trades'][0]['entry_version_tag']=='v442','AI trade ledger preserves historical version attribution')
 check('orders_raw' in p and 'bot_decisions_raw' in p and 'source_health' in p['diagnostics'],'AI file contains raw evidence plus diagnostics')
 print('AI AUDIT COMPAT TEST PASSED')
+

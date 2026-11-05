@@ -19,6 +19,7 @@ from runtime_audit import read_evidence, storage_health
 from broker_history import archived_evidence
 from state_storage import health as backup_health
 import time
+import tempfile
 import zipfile
 from collections import Counter
 from datetime import datetime, timedelta, timezone
@@ -231,7 +232,7 @@ def _learning_rows(state_dir: Path, since: datetime, until: datetime | None = No
             names = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             if "decisions" not in names:
                 return []
-            rows = db.execute("SELECT * FROM decisions WHERE julianday(ts) >= julianday(?) AND julianday(ts) <= julianday(?) ORDER BY julianday(ts) ASC", (_iso(since),_iso(until or _now()))).fetchall()
+            rows = db.execute("SELECT * FROM decisions WHERE julianday(ts) >= julianday(?) AND julianday(ts) <= julianday(?) ORDER BY julianday(ts) ASC", (_iso(since),_iso(until or _now())))
             return [dict(r) for r in rows]
     except Exception:
         return []
@@ -351,7 +352,73 @@ def _summary(days: int, orders: List[Dict[str, Any]], activities: List[Dict[str,
     }
 
 
-def build_analysis_export(days: int, state_dir: str | Path, bot_version: str, api: Any | None = None) -> Tuple[bytes, Dict[str, Any]]:
+def _csv_compatible_rows(rows, *, inplace=False):
+    keys = {str(key) for row in rows for key in row}
+    converted = rows if inplace else []
+    for row in rows:
+        values = {key: str(_cell(row.get(key))) for key in keys}
+        if inplace:
+            row.clear()
+            row.update(values)
+        else:
+            converted.append(values)
+    return converted
+
+
+def _json_chunks(value: Any):
+    """Sanitize while encoding, without copying the entire evidence payload."""
+    if isinstance(value, dict):
+        yield "{"
+        separator = ""
+        for key, item in value.items():
+            key = str(key)
+            low = key.lower()
+            if low in SENSITIVE_KEYS or any(x in low for x in ("api_secret", "secret_key", "api-key-secret")):
+                continue
+            yield separator
+            yield json.dumps(key, ensure_ascii=False)
+            yield ":"
+            yield from _json_chunks(item)
+            separator = ","
+        yield "}"
+    elif isinstance(value, (list, tuple)):
+        yield "["
+        for index, item in enumerate(value):
+            if index:
+                yield ","
+            yield from _json_chunks(item)
+        yield "]"
+    else:
+        yield json.dumps(value, ensure_ascii=False, default=str)
+
+
+def _write_json_member(archive, name, value):
+    with archive.open(name, "w", force_zip64=True) as member:
+        with io.TextIOWrapper(io.BufferedWriter(member, buffer_size=65536), encoding="utf-8") as text:
+            text.writelines(_json_chunks(value))
+
+
+def _write_csv_member(archive, name, rows):
+    rows = [r for r in rows if isinstance(r, dict)]
+    if not rows:
+        archive.writestr(name, "")
+        return
+    preferred = [
+        "transaction_time", "date", "activity_type", "type", "symbol", "side", "qty", "price", "net_amount",
+        "order_id", "id", "submitted_at", "filled_at", "canceled_at", "status", "filled_qty", "filled_avg_price",
+        "client_order_id", "order_class", "time_in_force", "notional", "commission", "fee", "description",
+    ]
+    all_keys = {str(key) for row in rows for key in row}
+    keys = list(dict.fromkeys(key for key in preferred + sorted(all_keys) if key in all_keys))
+    with archive.open(name, "w", force_zip64=True) as member:
+        with io.TextIOWrapper(io.BufferedWriter(member, buffer_size=65536), encoding="utf-8", newline="") as text:
+            writer = csv.DictWriter(text, fieldnames=keys, extrasaction="ignore")
+            writer.writeheader()
+            for row in rows:
+                writer.writerow({key: _cell(row.get(key)) for key in keys})
+
+
+def _collect_analysis_data(days, state_dir, bot_version, api=None):
     days = max(1, min(30, int(days)))
     now = _now()
     since = now - timedelta(days=days)
@@ -435,40 +502,89 @@ def build_analysis_export(days: int, state_dir: str | Path, bot_version: str, ap
         "errors": errors,
     }
 
+    return {
+        "days": days,
+        "orders": orders,
+        "activities": activities,
+        "decisions": decisions,
+        "portfolio_rows": portfolio_rows,
+        "keep_account": keep_account,
+        "positions": positions,
+        "history": history,
+        "status": status,
+        "control": control,
+        "execution_state": execution_state,
+        "trade_plans": trade_plans,
+        "fills": fills,
+        "fees": fees,
+        "trade_ledger": trade_ledger,
+        "summary": summary,
+        "manifest": manifest,
+        "errors": errors,
+    }
+
+
+def build_analysis_export(days: int, state_dir: str | Path, bot_version: str, api: Any | None = None, *, output=None):
+    data = _collect_analysis_data(days, state_dir, bot_version, api)
+    days = data["days"]
+    orders = data["orders"]
+    activities = data["activities"]
+    decisions = data["decisions"]
+    portfolio_rows = data["portfolio_rows"]
+    keep_account = data["keep_account"]
+    positions = data["positions"]
+    history = data["history"]
+    status = data["status"]
+    control = data["control"]
+    execution_state = data["execution_state"]
+    trade_plans = data["trade_plans"]
+    fills = data["fills"]
+    fees = data["fees"]
+    trade_ledger = data["trade_ledger"]
+    summary = data["summary"]
+    manifest = data["manifest"]
+    errors = data["errors"]
+    since = _parse_ts(manifest["range_start_utc"])
+    now = _parse_ts(manifest["range_end_utc"])
     readme = f"""TRADINGBOT ANALYSE-EKSPORT\n===========================\n\nPeriode: siste {days} dag(er)\nFra: {_iso(since)}\nTil: {_iso(now)}\nBotversjon: {bot_version}\n\nHENSIKT\n-------\nDenne ZIP-en er laget for detaljert analyse av hva boten faktisk gjorde: ordre, fills, gebyrer, kontoutvikling, botens egne beslutningssignaler, execution-guard og trade plans.\n\nFILER\n-----\n00_manifest.json              Versjon/periode/feil under eksport\n01_summary.json               Hurtigstatistikk og kontrolltall\n02_account_snapshot.json      Sanitert kontosnapshot (ingen API-noekler/passord)\n03_positions_snapshot.csv     Aapne posisjoner ved eksporttidspunkt\n03_positions_snapshot.json    Samme som JSON\n04_orders.csv/json            Alpaca-ordre i valgt periode, inkl. canceled/filled/bracket-data\n05_activities.csv/json        Alle kontoaktiviteter i valgt periode\n06_fills.csv                  Kun faktiske fill-hendelser; order_id binder fill til ordre\n07_fees.csv                   Gebyr-/fee-aktiviteter som kan identifiseres\n08_portfolio_history.csv/json Kontoequity/P&L gjennom perioden\n09_bot_decisions.csv          Botens journal: score, signal, EV, sannsynlighet, outcomes m.m.\n10_status_snapshot.json       Dashboard/status ved eksport\n11_control_snapshot.json      Kontrollinnstillinger (sanitert)\n12_execution_state.json       Ordresikkerhet / paagaaende exit-tilstand\n13_trade_plans.json           Lagrede TP/SL/edge-planer\n\nANALYSE\n-------\nLast opp hele ZIP-en i ChatGPT og be om f.eks.:\n\"Analyser denne TradingBot-eksporten. Beregn netto resultat, vinn/tap, profit factor, holdetid, kostnader, slippage, raske reverseringer, gjentatte ordre og hvilke signal-/EV-/score-kombinasjoner som fungerer best. Kom med konkrete kodeendringer.\"\n\nVIKTIG\n------\nPortfolio equity inkluderer urealisert P/L og kontobevegelser. Fills og aktiviteter er derfor med slik at realisert execution-resultat og gebyrer kan analyseres separat. Kryptogebyrer kan vaere i krypto eller USD og skal ikke blandes som samme enhet.\n"""
 
-    files: Dict[str, bytes | str] = {
+    files: Dict[str, Any] = {
         "README_ANALYSE.txt": readme,
-        "00_manifest.json": _json_bytes(manifest),
-        "01_summary.json": _json_bytes(summary),
-        "02_account_snapshot.json": _json_bytes(keep_account),
-        "03_positions_snapshot.json": _json_bytes(positions),
-        "03_positions_snapshot.csv": _rows_to_csv(positions),
-        "04_orders.json": _json_bytes(orders),
-        "04_orders.csv": _rows_to_csv(orders),
-        "05_activities.json": _json_bytes(activities),
-        "05_activities.csv": _rows_to_csv(activities),
-        "06_fills.csv": _rows_to_csv(fills),
-        "07_fees.csv": _rows_to_csv(fees),
-        "08_portfolio_history.json": _json_bytes(history),
-        "08_portfolio_history.csv": _rows_to_csv(portfolio_rows),
-        "09_bot_decisions.csv": _rows_to_csv(decisions),
-        "09b_trade_ledger.csv": _rows_to_csv(trade_ledger),
-        "10_status_snapshot.json": _json_bytes(status),
-        "11_control_snapshot.json": _json_bytes(control),
-        "12_execution_state.json": _json_bytes(execution_state),
-        "13_trade_plans.json": _json_bytes(trade_plans),
+        "00_manifest.json": ("json", manifest),
+        "01_summary.json": ("json", summary),
+        "02_account_snapshot.json": ("json", keep_account),
+        "03_positions_snapshot.json": ("json", positions),
+        "03_positions_snapshot.csv": ("csv", positions),
+        "04_orders.json": ("json", orders),
+        "04_orders.csv": ("csv", orders),
+        "05_activities.json": ("json", activities),
+        "05_activities.csv": ("csv", activities),
+        "06_fills.csv": ("csv", fills),
+        "07_fees.csv": ("csv", fees),
+        "08_portfolio_history.json": ("json", history),
+        "08_portfolio_history.csv": ("csv", portfolio_rows),
+        "09_bot_decisions.csv": ("csv", decisions),
+        "09b_trade_ledger.csv": ("csv", trade_ledger),
+        "10_status_snapshot.json": ("json", status),
+        "11_control_snapshot.json": ("json", control),
+        "12_execution_state.json": ("json", execution_state),
+        "13_trade_plans.json": ("json", trade_plans),
     }
     if errors:
         files["EXPORT_ERRORS.txt"] = "\n".join(errors) + "\n"
 
-    buf = io.BytesIO()
+    buf = output if output is not None else io.BytesIO()
     with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
         for name, payload in files.items():
-            if isinstance(payload, str):
-                payload = payload.encode("utf-8")
-            zf.writestr(name, payload)
-    return buf.getvalue(), manifest
+            if isinstance(payload, tuple):
+                kind, value = payload
+                if kind == "json":
+                    _write_json_member(zf, name, value)
+                else:
+                    _write_csv_member(zf, name, value)
+            else:
+                zf.writestr(name, payload)
+    return (buf.getvalue() if output is None else buf), manifest
 
 
 # ---------------------------------------------------------------------------
@@ -705,7 +821,7 @@ def _shadow_rows(state_dir: str | Path, start_utc: Any, end_utc: Any) -> List[Di
         return []
 
 
-def build_ai_analysis_export(days: int, state_dir: str | Path, bot_version: str, api: Any | None = None) -> Tuple[bytes, Dict[str, Any]]:
+def build_ai_analysis_export(days: int, state_dir: str | Path, bot_version: str, api: Any | None = None, *, output=None):
     """Build ONE uploadable ZIP containing ONE comprehensive AI_ANALYSE.json.
 
     The payload deliberately contains both precomputed diagnostics and the raw
@@ -715,32 +831,31 @@ def build_ai_analysis_export(days: int, state_dir: str | Path, bot_version: str,
     if api is None:
         cfg = trading_bot.load_cfg()
         api = trading_bot.AlpacaRest(cfg)
-    legacy_blob, manifest = build_analysis_export(days, state_dir, bot_version, api=api)
-    extracted: Dict[str, bytes] = {}
-    with zipfile.ZipFile(io.BytesIO(legacy_blob), "r") as zf:
-        for name in zf.namelist():
-            extracted[name] = zf.read(name)
-    def j(name: str, default: Any) -> Any:
-        try:
-            return json.loads(extracted.get(name, b"").decode("utf-8"))
-        except Exception:
-            return default
-    summary = j("01_summary.json", {})
-    account = j("02_account_snapshot.json", {})
-    positions = j("03_positions_snapshot.json", [])
-    orders = j("04_orders.json", [])
-    activities = j("05_activities.json", [])
-    history = j("08_portfolio_history.json", {})
-    status = j("10_status_snapshot.json", {})
-    control = j("11_control_snapshot.json", {})
-    execution = j("12_execution_state.json", {})
-    plans = j("13_trade_plans.json", {})
-    decisions = _csv_payload_rows(extracted.get("09_bot_decisions.csv", b""))
+    data = _collect_analysis_data(days, state_dir, bot_version, api)
+    manifest = data["manifest"]
+    summary = data["summary"]
+    account = data["keep_account"]
+    positions = data["positions"]
+    orders = data["orders"]
+    activities = data["activities"]
+    history = data["history"]
+    status = data["status"]
+    control = data["control"]
+    execution = data["execution_state"]
+    plans = data["trade_plans"]
+    decisions = data["decisions"]
+    fills = data["fills"]
+    fees = data["fees"]
+    portfolio_rows = data["portfolio_rows"]
+    # Preserve the historical CSV-derived field types without serializing an
+    # intermediate archive or keeping duplicate raw byte buffers in memory.
+    decisions = _csv_compatible_rows(decisions, inplace=True)
+    fills = _csv_compatible_rows(fills)
+    fees = _csv_compatible_rows(fees)
+    portfolio_rows = _csv_compatible_rows(portfolio_rows)
+    del data
     cutoff = _parse_dt_any(manifest.get("range_end_utc"))
     decisions = [d for d in decisions if (_parse_dt_any(d.get("ts")) is not None and _parse_dt_any(d["ts"]) <= cutoff)]
-    fills = _csv_payload_rows(extracted.get("06_fills.csv", b""))
-    fees = _csv_payload_rows(extracted.get("07_fees.csv", b""))
-    portfolio_rows = _csv_payload_rows(extracted.get("08_portfolio_history.csv", b""))
     ledger = _trade_ledger([dict(x) for x in activities if str(x.get("activity_type") or x.get("type") or "").upper()=="FILL"])
     omap = _flatten_order_map(orders if isinstance(orders, list) else [])
     enriched: List[Dict[str, Any]] = []
@@ -880,7 +995,25 @@ def build_ai_analysis_export(days: int, state_dir: str | Path, bot_version: str,
     ai_manifest["build_id"] = status.get("build_id")
     ai_manifest["server_started_at_utc"] = status.get("server_started_at_utc")
     payload["meta"] = ai_manifest
-    out = io.BytesIO()
-    with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=7) as zf:
-        zf.writestr("AI_ANALYSE.json", json.dumps(payload, ensure_ascii=False, indent=2, default=str).encode("utf-8"))
-    return out.getvalue(), ai_manifest
+    out = output if output is not None else io.BytesIO()
+    with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+        _write_json_member(zf, "AI_ANALYSE.json", payload)
+    return (out.getvalue() if output is None else out), ai_manifest
+
+
+def build_ai_analysis_export_file(days, state_dir, bot_version, api=None):
+    """Return an anonymous disk-backed ZIP; closing it automatically frees disk.
+
+    The HTTP response owns the handle after a successful build. An exception
+    closes it here, and the OS also removes it if the process terminates.
+    """
+    output = tempfile.TemporaryFile(mode="w+b")
+    try:
+        _, manifest = build_ai_analysis_export(days, state_dir, bot_version, api=api, output=output)
+        output.seek(0)
+        return output, manifest
+    except BaseException:
+        output.close()
+        raise
+
+
