@@ -54,12 +54,14 @@ from alpaca_v49 import install_v49
 from control_server import app, patch_control, safe_read_json, safe_write_json, STATUS_PATH
 from render_usage_guard import RenderUsageGuard
 from saxo_sim import SaxoSimEngine
+from saxo_oauth import register_saxo_oauth
 
 # Install monkey-patches before the engine constructs AlpacaRest / IntelligenceEngine.
 # The sidecar itself starts only after persistent state has been restored.
 ALPACA_EDGE = install_v49(trading_bot)
 RENDER_USAGE_GUARD = RenderUsageGuard(trading_bot.STATE_DIR)
 SAXO_SIM = SaxoSimEngine(trading_bot.STATE_DIR)
+register_saxo_oauth(app, SAXO_SIM)
 
 ENGINE_THREAD: threading.Thread | None = None
 ENGINE_LOCK = threading.Lock()
@@ -164,3 +166,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
