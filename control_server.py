@@ -108,7 +108,9 @@ def record_login_failure(ip: str) -> None:
 @app.before_request
 def require_login():
     p = request.path
-    public = p in {"/login", "/healthz", "/manifest.webmanifest", "/service-worker.js"} or p.startswith("/static/")
+    # The SIM OAuth callback validates one-time state and a dedicated browser
+    # cookie. Keep the dashboard session cookie Strict, including during OAuth.
+    public = p in {"/login", "/healthz", "/manifest.webmanifest", "/service-worker.js", "/saxo/oauth/callback", "/saxo/oauth/result"} or p.startswith("/static/")
     if public or is_authed():
         return None
     if p.startswith("/api/"):
@@ -2673,4 +2675,5 @@ if __name__ == "__main__":
     host = os.getenv("DASHBOARD_BIND", "127.0.0.1")
     port = int(os.getenv("PORT", os.getenv("DASHBOARD_PORT", "5050")))
     app.run(host=host, port=port, debug=False, threaded=True)
+
 

@@ -11,11 +11,11 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install -r requirements.txt ruff
-      - run: python -m unittest saxo_oauth_test -v
+      - run: python -m unittest saxo_oauth_test saxo_oauth_flow_test -v
       - run: python -m unittest v414_test -v
       - run: python -m unittest export_memory_test -v
       - run: python v442_test.py
       - run: python safety_test.py
       - run: python -m compileall -q .
-      - run: ruff check --select E9,F63,F7,F82 corporate_backoff.py saxo_sim.py runtime_audit.py trading_bot.py alpaca_v49.py control_server.py v414_test.py
+      - run: ruff check --select E9,F63,F7,F82 corporate_backoff.py saxo_sim.py runtime_audit.py trading_bot.py alpaca_v49.py control_server.py saxo_oauth.py saxo_oauth_flow_test.py v414_test.py
 
