@@ -1,7 +1,6 @@
 """SIM browser OAuth tests: no real credentials, network or trading orders."""
 import json
 import os
-import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,7 +10,7 @@ from unittest.mock import Mock, patch
 
 from flask import Flask
 import control_server
-from saxo_oauth import COOKIE, START_COOKIE, SIM_REDIRECT_URI, register_saxo_oauth
+from saxo_oauth import COOKIE, SIM_REDIRECT_URI, register_saxo_oauth
 from saxo_sim import SaxoSimEngine
 
 BASE = 'https://trading-remote.onrender.com'
@@ -52,11 +51,25 @@ class SaxoOAuthFlowTests(unittest.TestCase):
 
     def start(self):
         response = self.client.get('/saxo/oauth', base_url=BASE)
-        csrf = re.search(r'name="csrf" value="([^"]+)"', response.text).group(1)
-        response = self.client.post('/saxo/oauth/start', data={'csrf': csrf}, base_url=BASE)
         self.assertEqual(response.status_code, 302)
         query = parse_qs(urlparse(response.location).query)
         return response, query['state'][0]
+
+    def test_authenticated_get_navigates_directly_without_form(self):
+        response, state = self.start()
+        self.assertTrue(response.location.startswith('https://sim.logonvalidation.net/authorize?'))
+        self.assertNotIn('<form', response.text)
+        self.assertEqual(self.app.config['SESSION_COOKIE_SAMESITE'], 'Strict')
+        self.engine.session.post.assert_not_called()
+        self.engine.session.request.assert_not_called()
+
+    def test_cached_start_form_recovers_to_direct_login(self):
+        for method in ('get', 'post'):
+            response = getattr(self.client, method)('/saxo/oauth/start', base_url=BASE)
+            self.assertEqual(response.status_code, 303)
+            self.assertEqual(response.location, '/saxo/oauth')
+            self.assertEqual(response.headers['Cache-Control'], 'no-store')
+        self.engine.session.post.assert_not_called()
 
     def callback(self, state, **extra):
         values = {'state': state, 'code': 'fake-auth-code', **extra}
@@ -76,51 +89,10 @@ class SaxoOAuthFlowTests(unittest.TestCase):
         self.assertNotIn('fake-app-key', response.text)
         self.assertNotIn('Logg inn hos Saxo SIM', response.text)
 
-    def test_start_rejects_csrf(self):
-        self.client.get('/saxo/oauth', base_url=BASE)
-        response = self.client.post('/saxo/oauth/start', data={'csrf': 'wrong'}, base_url=BASE)
-        self.assertEqual(response.status_code, 303)
-        self.assertEqual(response.location, '/saxo/oauth')
-        self.engine.session.post.assert_not_called()
 
-    def test_dashboard_session_refresh_does_not_lose_form(self):
-        response = self.client.get('/saxo/oauth', base_url=BASE)
-        csrf = re.search(r'name="csrf" value="([^"]+)"', response.text).group(1)
-        # Emulate a background dashboard response replacing the Flask cookie
-        # with an authenticated session snapshot from before the setup GET.
-        with self.client.session_transaction(base_url=BASE) as sess:
-            sess.clear()
-            sess['auth'] = True
-        response = self.client.post('/saxo/oauth/start', data={'csrf': csrf}, base_url=BASE)
-        self.assertEqual(response.status_code, 302)
-        self.assertTrue(response.location.startswith('https://sim.logonvalidation.net/authorize?'))
 
-    def test_setup_cookie_is_strict_and_form_redirect_allows_only_sim(self):
-        response = self.client.get('/saxo/oauth', base_url=BASE)
-        cookies = '\n'.join(response.headers.getlist('Set-Cookie'))
-        self.assertIn(START_COOKIE, cookies)
-        self.assertIn('SameSite=Strict', cookies)
-        self.assertIn('HttpOnly', cookies)
-        self.assertIn('Secure', cookies)
-        self.assertIn("form-action 'self' https://sim.logonvalidation.net;", response.headers['Content-Security-Policy'])
-        self.assertNotIn('https://live', response.headers['Content-Security-Policy'])
 
-    def test_repeated_click_does_not_consume_form_token(self):
-        response = self.client.get('/saxo/oauth', base_url=BASE)
-        csrf = re.search(r'name="csrf" value="([^"]+)"', response.text).group(1)
-        for _ in range(2):
-            response = self.client.post('/saxo/oauth/start', data={'csrf': csrf}, base_url=BASE)
-            self.assertEqual(response.status_code, 302)
 
-    def test_stale_form_recovers_without_starting_oauth(self):
-        with patch('saxo_oauth.time.monotonic', return_value=100):
-            response = self.client.get('/saxo/oauth', base_url=BASE)
-            csrf = re.search(r'name="csrf" value="([^"]+)"', response.text).group(1)
-        with patch('saxo_oauth.time.monotonic', return_value=701):
-            response = self.client.post('/saxo/oauth/start', data={'csrf': csrf}, base_url=BASE)
-        self.assertEqual(response.status_code, 303)
-        self.assertEqual(response.location, '/saxo/oauth')
-        self.engine.session.post.assert_not_called()
 
     def test_start_always_uses_sim_and_registered_redirect(self):
         response, state = self.start()
