@@ -2532,7 +2532,15 @@ def main() -> None:
                                         and bool(intel.get("entry_allowed"))
                                         and (not profit_engine_enabled or (profit_plan is not None and profit_plan.allowed)))
                         last_bar_epoch = epoch((bars_cache.get_bars(sym)[-1] if bars_cache.get_bars(sym) else {}).get("t"))
-                        bar_fresh = last_bar_epoch is not None and -2 <= now_ts-last_bar_epoch <= max(180, timeframe_to_seconds(timeframe)*3)
+                        _bar_fresh_limit = max(180, timeframe_to_seconds(timeframe)*3)
+                        # Paper mode may use IEX names whose last 1m trade bar is sparse even while
+                        # the quote is current. Allow up to 5 minutes only when the quote is fresh;
+                        # live trading keeps the stricter production limit.
+                        if cfg.paper and not quote_is_stale:
+                            _bar_fresh_limit = max(_bar_fresh_limit, timeframe_to_seconds(timeframe)*5)
+                        bar_fresh = last_bar_epoch is not None and -2 <= now_ts-last_bar_epoch <= _bar_fresh_limit
+                        st["debug"]["bar_age_sec"] = None if last_bar_epoch is None else round(now_ts-last_bar_epoch, 3)
+                        st["debug"]["bar_fresh_limit_sec"] = _bar_fresh_limit
                         candidate_ok = candidate_ok and bar_fresh and broker_fresh and not paused and armed and not kill
                         _sector_ctx = intel.get("sector_confirmation") or {}
                         confirmed = entry_confirmation.ready(
@@ -2570,13 +2578,25 @@ def main() -> None:
                             elif entry_close_window:
                                 st["action"] = f"WAIT_CLOSE:{minutes_to_close:.1f}m"
                             elif intelligence_enabled and not bool(intel.get("entry_allowed")):
-                                st["action"] = f"WAIT_INTEL:{float(intel.get('score', 0)):.0f}"
+                                _sector_gate = bool((intel.get("sector_confirmation") or {}).get("ok", True)) or effective_strategy == "meanrev"
+                                if bool(intel.get("event_blackout")):
+                                    st["action"] = "WAIT_EVENT_BLACKOUT"
+                                elif bool(intel.get("risk_veto")):
+                                    st["action"] = "WAIT_RISK_VETO"
+                                elif float(intel.get("score", 0) or 0) < intelligence_entry_score:
+                                    st["action"] = f"WAIT_SCORE:{float(intel.get('score', 0)):.0f}/{intelligence_entry_score:.0f}"
+                                elif not _sector_gate:
+                                    _sec = intel.get("sector_confirmation") or {}
+                                    st["action"] = f"WAIT_SECTOR:{float(_sec.get('score', 0) or 0):+.1f}"
+                                else:
+                                    st["action"] = f"WAIT_INTEL:{float(intel.get('score', 0)):.0f}"
                             elif profit_engine_enabled and (profit_plan is None or not bool(profit_plan.allowed)):
                                 if profit_plan is None:
                                     st["action"] = "WAIT_EDGE"
                                 else:
                                     _p_gate = getattr(profit_plan, "probability_tp_before_sl", profit_plan.probability_up)
-                                    st["action"] = f"WAIT_EDGE:{_p_gate*100:.0f}%/{profit_plan.expected_value_bps:+.0f}bp"
+                                    _edge_reason = str(getattr(profit_plan, "reason", "WAIT_EDGE") or "WAIT_EDGE").replace("WAIT_", "")
+                                    st["action"] = f"WAIT_EDGE_{_edge_reason}:{_p_gate*100:.0f}%/{profit_plan.expected_value_bps:+.0f}bp"
                             elif (not cfg.paper and profit_engine_enabled and profit_plan is not None
                                   and not allow_unvalidated_live and profit_plan.calibration_samples < min_live_calibration_samples):
                                 st["action"] = f"WAIT_VALIDATION:{profit_plan.calibration_samples:.0f}/{min_live_calibration_samples:.0f}"
@@ -3102,6 +3122,20 @@ def main() -> None:
                     + (" - new entries blocked" if usage_entry_blocked else "")
                 )
 
+            # Compact blocker telemetry: makes it obvious why positive signals do not trade.
+            blocker_counts: Dict[str, int] = {}
+            positive_signal_count = 0
+            for _st in symbols_state.values():
+                try:
+                    if int(_st.get("signal") or 0) > 0:
+                        positive_signal_count += 1
+                        _a = str(_st.get("action") or "NONE")
+                        _base = _a.split(":", 1)[0]
+                        blocker_counts[_base] = blocker_counts.get(_base, 0) + 1
+                except Exception:
+                    pass
+            blocker_top = sorted(blocker_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+
             out = {
                 "version": runtime_bot_version(),
                 "build_id": os.getenv("RENDER_GIT_COMMIT", "local")[:12],
@@ -3130,6 +3164,13 @@ def main() -> None:
                     "broker_brackets": bool(broker_bracket_enabled),
                     "journal": "learning_v3.sqlite",
                     "calibration": profit_engine.calibration_summary("STOCK"),
+                },
+                "entry_diagnostics": {
+                    "positive_signals": positive_signal_count,
+                    "blocker_counts": dict(blocker_top),
+                    "active_universe_size": len(active_universe_set) if trade_stocks and stock_ok else 0,
+                    "configured_dynamic_top_n": dynamic_universe_top_n,
+                    "global_risk": round(float(getattr(intelligence, "global_risk", 0.0) or 0.0), 2) if intelligence_enabled else None,
                 },
                 "adaptive_edge": {
                     "enabled": True,
@@ -3182,7 +3223,8 @@ def main() -> None:
                 print(
                     f"{utc_now_iso()} | INFO | Heartbeat: market={market_mode} stock_session={stock_session} mode={strategy_mode} symbols={len(symbols_state)} "
                     f"armed={armed} paused={paused} TEST={test_mode} orders={len(orders)} "
-                    f"poll={poll_sec}s bars_refresh={refresh_bars_every_sec}s notes={out['notes']}"
+                    f"poll={poll_sec}s bars_refresh={refresh_bars_every_sec}s "
+                    f"positive_signals={positive_signal_count} blockers={dict(blocker_top[:8])} notes={out['notes']}"
                 )
 
         except Exception as e:
