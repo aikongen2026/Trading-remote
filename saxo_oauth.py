@@ -8,12 +8,13 @@ import threading
 import time
 from urllib.parse import urlencode
 
-from flask import make_response, redirect, render_template_string, request, session
+from flask import make_response, redirect, render_template_string, request
 
 SIM_AUTHORIZE_URL = "https://sim.logonvalidation.net/authorize"
 SIM_TOKEN_URL = "https://sim.logonvalidation.net/token"
 SIM_REDIRECT_URI = "https://trading-remote.onrender.com/saxo/oauth/callback"
 COOKIE = "__Host-saxo_sim_oauth"
+START_COOKIE = "__Host-saxo_sim_start"
 FLOW_TTL = 600
 
 PAGE = """<!doctype html><html lang="no"><head><meta charset="utf-8">
@@ -40,6 +41,7 @@ def register_saxo_oauth(app, engine):
     are returned in HTML, dashboard status, cookies, or application logs.
     """
     pending = {}
+    start_tokens = {}
     pending_lock = threading.Lock()
 
     def page(message, *, status=200, csrf=None, missing=None):
@@ -50,7 +52,7 @@ def register_saxo_oauth(app, engine):
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Content-Security-Policy"] = (
-            "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; "
+            "default-src 'none'; style-src 'unsafe-inline'; form-action 'self' https://sim.logonvalidation.net; "
             "base-uri 'none'; frame-ancestors 'none'"
         )
         return response
@@ -68,18 +70,39 @@ def register_saxo_oauth(app, engine):
             missing.insert(0, "SAXO_SIM_ENABLED=true")
         if missing:
             return page("Saxo SIM trenger appopplysningene før du kan logge inn.", missing=missing)
-        csrf = session.get("saxo_oauth_csrf")
-        if not csrf:
-            csrf = secrets.token_urlsafe(32)
-            session["saxo_oauth_csrf"] = csrf
-        return page("Koble TradingBot til Saxos demomiljø. Innloggingen sender ingen handelsordrer.", csrf=csrf)
+        # Permanent Flask sessions are refreshed by dashboard background polls.
+        # A late poll can overwrite a cookie carrying a newly added CSRF value.
+        # Keep form protection in its own browser-bound HttpOnly Strict cookie
+        # plus server-side expiry; do not mutate the dashboard session.
+        now = time.monotonic()
+        csrf = request.cookies.get(START_COOKIE, "")
+        with pending_lock:
+            for token in list(start_tokens):
+                if start_tokens[token] <= now:
+                    del start_tokens[token]
+            if csrf not in start_tokens:
+                csrf = secrets.token_urlsafe(32)
+                if len(start_tokens) >= 128:
+                    return page("For mange pågående innlogginger. Prøv igjen om noen minutter.", status=429)
+                start_tokens[csrf] = now + FLOW_TTL
+        response = page("Koble TradingBot til Saxos demomiljø. Innloggingen sender ingen handelsordrer.", csrf=csrf)
+        response.set_cookie(START_COOKIE, csrf, max_age=FLOW_TTL,
+                            secure=True, httponly=True, samesite="Strict", path="/")
+        return response
 
     @app.post("/saxo/oauth/start")
     def saxo_oauth_start():
-        expected = session.pop("saxo_oauth_csrf", "")
+        expected = request.cookies.get(START_COOKIE, "")
         supplied = request.form.get("csrf", "")
-        if not expected or not hmac.compare_digest(expected.encode("utf-8"), supplied.encode("utf-8")):
-            return page("Åpne innloggingssiden på nytt før du fortsetter.", status=403)
+        with pending_lock:
+            valid_form = (bool(expected) and start_tokens.get(supplied, 0) > time.monotonic()
+                          and hmac.compare_digest(expected.encode("utf-8"), supplied.encode("utf-8")))
+        if not valid_form:
+            # Recover a stale/cached form without bypassing validation or
+            # starting any OAuth request. The fresh page issues a new form.
+            response = redirect("/saxo/oauth", code=303)
+            response.headers["Cache-Control"] = "no-store"
+            return response
         if config_missing() or not engine.enabled:
             return page("Saxo SIM-oppsettet mangler. Kontroller variablene i Render.", status=409)
         state = secrets.token_urlsafe(32)
