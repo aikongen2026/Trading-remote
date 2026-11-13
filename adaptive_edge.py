@@ -163,10 +163,14 @@ def dynamic_universe(
 
     risk = sf(getattr(intelligence, "global_risk", 0.0))
     n = max(5, int(top_n))
-    if risk >= 80:
-        n = min(n, 8)
-    elif risk >= 70:
+    # V4.15: the previous risk caps (8/12) starved the long-only engine.
+    # The 7-day audit showed ~71% of positive stock signals dying at WAIT_UNIVERSE,
+    # often before Intelligence/EV could evaluate them. Keep a defensive contraction,
+    # but preserve enough breadth for diversification and downstream gates.
+    if risk >= 85:
         n = min(n, 12)
+    elif risk >= 75:
+        n = min(n, 16)
     ordered = sorted(scores, key=lambda s: scores[s], reverse=True)
     active = ordered[:n]
     posmap = positions or {}
