@@ -20,6 +20,7 @@ import base64
 import json
 import logging
 import os
+import tempfile
 import threading
 import time
 from datetime import datetime, time as dtime
@@ -114,13 +115,28 @@ class SaxoSimEngine:
         # Saxo rotates refresh tokens: the newly returned token invalidates the old one.
         # Keep the latest token pair on the persistent private Render disk so restarts
         # do not fall back to an invalid bootstrap refresh token from environment vars.
-        persisted_tokens = _read_json(self.token_state_path, {})
+        self.token_store_error = None
+        persisted_tokens = _read_json(self.token_state_path, None)
+        if self.token_state_path.exists() and (
+            not isinstance(persisted_tokens, dict)
+            or persisted_tokens.get("environment") != "SIM"
+            or not isinstance(persisted_tokens.get("access_token", ""), str)
+            or not isinstance(persisted_tokens.get("refresh_token", ""), str)
+            or not (persisted_tokens.get("access_token") or persisted_tokens.get("refresh_token"))
+        ):
+            self.token_store_error = "SAXO_SIM_TOKEN_STORE_INVALID"
         if not isinstance(persisted_tokens, dict):
             persisted_tokens = {}
         env_access = str(os.getenv("SAXO_SIM_ACCESS_TOKEN") or os.getenv("SAXO_SIM_TOKEN") or "").strip()
         env_refresh = str(os.getenv("SAXO_SIM_REFRESH_TOKEN") or "").strip()
-        self.access_token = str(persisted_tokens.get("access_token") or env_access).strip()
-        self.refresh_token = str(persisted_tokens.get("refresh_token") or env_refresh).strip()
+        # Never combine one stored token with an unrelated bootstrap token.
+        stored = self.token_state_path.exists()
+        self.access_token = str(persisted_tokens.get("access_token") or "").strip() if stored else env_access
+        self.refresh_token = str(persisted_tokens.get("refresh_token") or "").strip() if stored else env_refresh
+        self.token_expires_at = self._expiry(persisted_tokens.get("access_expires_at"))
+        self.refresh_expires_at = self._expiry(persisted_tokens.get("refresh_expires_at"))
+        self.auth_error = None
+        self._tokens_dirty = False
         self.account_connected = False
         self.last_successful_poll = None
         self._last_log = None
@@ -162,7 +178,24 @@ class SaxoSimEngine:
 
     @property
     def configured(self) -> bool:
-        return bool(self.enabled and (self.access_token or self.refresh_token))
+        return bool(self.enabled and not self.token_store_error and (
+            self.access_token or (self.refresh_token and self.app_key and self.app_secret)
+        ))
+
+    @staticmethod
+    def _expiry(value: Any) -> float:
+        try:
+            value = float(value)
+            return value if 0 < value < float("inf") else 0.0
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _missing_oauth(self) -> List[str]:
+        return [name for name, value in (
+            ("SAXO_SIM_REFRESH_TOKEN", self.refresh_token),
+            ("SAXO_SIM_APP_KEY", self.app_key),
+            ("SAXO_SIM_APP_SECRET", self.app_secret),
+        ) if not value]
 
     def _budget_rollover(self) -> None:
         now = datetime.now(OSLO_TZ)
@@ -209,18 +242,46 @@ class SaxoSimEngine:
             "refresh_token": self.refresh_token,
             "saved_at": _now_iso(),
             "environment": "SIM",
+            "access_expires_at": self.token_expires_at,
+            "refresh_expires_at": self.refresh_expires_at,
         }
-        _write_json(self.token_state_path, payload)
+        self.token_state_path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix=".saxo-tokens-", dir=self.token_state_path.parent)
         try:
-            os.chmod(self.token_state_path, 0o600)
-        except Exception:
-            pass
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                os.chmod(tmp, 0o600)
+                json.dump(payload, fh)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, self.token_state_path)
+            if os.name != "nt":
+                dir_fd = os.open(self.token_state_path.parent, os.O_RDONLY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+            self._tokens_dirty = False
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
 
     def _refresh_access_token(self) -> bool:
+        # Only one refresh may consume the currently valid rotating token.
+        with self.lock:
+            return self._refresh_access_token_locked()
+
+    def _refresh_access_token_locked(self) -> bool:
+        if self._tokens_dirty:
+            self._persist_tokens()
+        if self.auth_error or self.token_store_error:
+            raise SaxoSimError(self.auth_error or self.token_store_error)
         if not self._render_allows_norway() or not self._budget_ok():
             raise SaxoSimError("SAXO_SIM_TOKEN_REFRESH_GUARD")
         if not (self.refresh_token and self.app_key and self.app_secret):
             return False
+        if self.refresh_expires_at and time.time() >= self.refresh_expires_at:
+            self.auth_error = "SAXO_SIM_REAUTH_REQUIRED"
+            raise SaxoSimError(self.auth_error)
         raw = f"{self.app_key}:{self.app_secret}".encode("utf-8")
         auth = base64.b64encode(raw).decode("ascii")
         r = self.session.post(
@@ -229,19 +290,36 @@ class SaxoSimEngine:
             data={"grant_type": "refresh_token", "refresh_token": self.refresh_token},
             timeout=20, allow_redirects=False,
         )
-        self._record_bytes(len(str(r.request.body or "")), len(r.content or b""))
         if r.status_code >= 300:
+            if r.status_code in {400, 401, 403}:
+                # No token response bodies or credentials enter public status/logs.
+                self.auth_error = "SAXO_SIM_REAUTH_REQUIRED"
+            if r.status_code == 429:
+                from corporate_backoff import retry_seconds
+                self.cooldown_until = time.monotonic() + max(300, retry_seconds(r.headers.get("Retry-After")))
+            self._record_bytes(len(str(r.request.body or "")), len(r.content or b""))
             raise SaxoSimError(f"SAXO_SIM_TOKEN_REFRESH_HTTP_{r.status_code}")
         data = r.json()
         token = str(data.get("access_token") or "").strip()
         if not token:
-            return False
+            raise SaxoSimError("SAXO_SIM_INVALID_TOKEN_RESPONSE")
         self.access_token = token
         new_refresh = str(data.get("refresh_token") or "").strip()
         if new_refresh:
             self.refresh_token = new_refresh
+        now = time.time()
+        ttl = self._expiry(data.get("expires_in"))
+        refresh_ttl = self._expiry(data.get("refresh_token_expires_in"))
+        self.token_expires_at = now + ttl if ttl else 0.0
+        if new_refresh:
+            self.refresh_expires_at = now + refresh_ttl if refresh_ttl else 0.0
+        elif refresh_ttl:
+            self.refresh_expires_at = now + refresh_ttl
         # Critical for Saxo: every refresh may rotate/replace the refresh token.
+        self._tokens_dirty = True
         self._persist_tokens()
+        # Persist rotated tokens BEFORE unrelated traffic accounting can fail.
+        self._record_bytes(len(str(r.request.body or "")), len(r.content or b""))
         return True
 
     def _request(self, method: str, path: str, *, params: Dict[str, Any] | None = None,
@@ -257,6 +335,13 @@ class SaxoSimEngine:
             raise SaxoSimError("SAXO_TRAFFIC_BUDGET")
         if not self._render_allows_norway():
             raise SaxoSimError("RENDER_NORWAY_PAUSE")
+        if self.auth_error or self.token_store_error:
+            raise SaxoSimError(self.auth_error or self.token_store_error)
+        if self._tokens_dirty:
+            self._persist_tokens()
+        if retry_auth and self.refresh_token and self.token_expires_at and time.time() >= self.token_expires_at - 60:
+            if not self._refresh_access_token():
+                raise SaxoSimError("SAXO_SIM_OAUTH_CONFIG_MISSING")
         if not self.access_token and not self._refresh_access_token():
             raise SaxoSimError("SAXO_SIM_TOKEN_MISSING")
 
@@ -273,7 +358,7 @@ class SaxoSimEngine:
                     return self._request(method, path, params=params, body=body, retry_auth=False)
             raise SaxoSimError(
                 "SAXO_SIM_ACCESS_TOKEN_EXPIRED: OAuth refresh credentials are missing; "
-                "set SAXO_SIM_REFRESH_TOKEN + SAXO_SIM_APP_KEY + SAXO_SIM_APP_SECRET"
+                "missing: " + ", ".join(self._missing_oauth())
             )
         if r.status_code == 429:
             from corporate_backoff import retry_seconds
@@ -469,8 +554,9 @@ class SaxoSimEngine:
             "enabled": self.enabled,
             "configured": self.configured,
             "auth_mode": "oauth_refresh" if (self.refresh_token and self.app_key and self.app_secret) else "manual_24h_token",
-            "oauth_refresh_ready": bool(self.refresh_token and self.app_key and self.app_secret),
-            "token_persisted": self.token_state_path.exists(),
+            "oauth_refresh_ready": bool(self.refresh_token and self.app_key and self.app_secret and not self.auth_error and not self.token_store_error),
+            "token_persisted": bool(self.token_state_path.is_file() and not self.token_store_error and not self._tokens_dirty),
+            "missing_oauth_fields": self._missing_oauth(),
             "paper": True,
             "environment": "SIM",
             "base_url": SIM_BASE,
@@ -496,8 +582,13 @@ class SaxoSimEngine:
             state = self._status(state="DISABLED", note="Set SAXO_SIM_ENABLED=true to enable Norway SIM.")
             _write_json(self.state_path, state)
             return state
+        if self.token_store_error or self.auth_error:
+            self.account_connected = False
+            state = self._status(state="REAUTH_REQUIRED", error=self.token_store_error or self.auth_error)
+            _write_json(self.state_path, state)
+            return state
         if not self.configured:
-            state = self._status(state="WAITING_FOR_SIM_TOKEN", note="Saxo SIM token/refresh credentials missing.")
+            state = self._status(state="WAITING_FOR_SIM_TOKEN", note="Missing OAuth fields: " + ", ".join(self._missing_oauth()))
             _write_json(self.state_path, state)
             return state
         if not self._render_allows_norway():
@@ -595,10 +686,11 @@ class SaxoSimEngine:
     def _log_status(self, state):
         marker = (state.get("state"), state.get("error"))
         if marker != self._last_log or state.get("state") == "RUNNING_SIM":
-            log.warning("SAXO_SIM state=%s account_connected=%s symbols=%s/%s positions=%s traffic_day_mb=%s traffic_month_mb=%s last_poll=%s error=%s",
+            log.warning("SAXO_SIM state=%s account_connected=%s symbols=%s/%s positions=%s traffic_day_mb=%s traffic_month_mb=%s last_poll=%s error=%s oauth_refresh_ready=%s token_persisted=%s missing_oauth_fields=%s",
                         state.get("state"), state.get("account_connected"), state.get("symbols_resolved"),
                         state.get("symbols_requested"), state.get("positions"), state.get("traffic_day_mb"),
-                        state.get("traffic_month_mb"), state.get("last_successful_poll"), state.get("error", state.get("note", "")))
+                        state.get("traffic_month_mb"), state.get("last_successful_poll"), state.get("error", state.get("note", "")),
+                        state.get("oauth_refresh_ready"), state.get("token_persisted"), state.get("missing_oauth_fields"))
             self._last_log = marker
 
     def run(self) -> None:
@@ -622,3 +714,4 @@ class SaxoSimEngine:
 
     def stop(self) -> None:
         self.stop_event.set()
+

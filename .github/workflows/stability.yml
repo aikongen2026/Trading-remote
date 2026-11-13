@@ -11,6 +11,7 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install -r requirements.txt ruff
+      - run: python -m unittest saxo_oauth_test -v
       - run: python -m unittest v414_test -v
       - run: python -m unittest export_memory_test -v
       - run: python v442_test.py
