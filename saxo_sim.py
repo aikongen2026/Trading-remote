@@ -105,12 +105,22 @@ class SaxoSimEngine:
         self.control_path = self.state_dir / "control.json"
         self.cache_path = self.state_dir / "saxo_sim_instruments.json"
         self.trade_log_path = self.state_dir / "saxo_sim_trades.jsonl"
+        self.token_state_path = self.state_dir / "saxo_sim_tokens.json"
 
         self.enabled = _bool_env("SAXO_SIM_ENABLED", False)
-        self.access_token = str(os.getenv("SAXO_SIM_ACCESS_TOKEN") or os.getenv("SAXO_SIM_TOKEN") or "").strip()
-        self.refresh_token = str(os.getenv("SAXO_SIM_REFRESH_TOKEN") or "").strip()
         self.app_key = str(os.getenv("SAXO_SIM_APP_KEY") or "").strip()
         self.app_secret = str(os.getenv("SAXO_SIM_APP_SECRET") or "").strip()
+
+        # Saxo rotates refresh tokens: the newly returned token invalidates the old one.
+        # Keep the latest token pair on the persistent private Render disk so restarts
+        # do not fall back to an invalid bootstrap refresh token from environment vars.
+        persisted_tokens = _read_json(self.token_state_path, {})
+        if not isinstance(persisted_tokens, dict):
+            persisted_tokens = {}
+        env_access = str(os.getenv("SAXO_SIM_ACCESS_TOKEN") or os.getenv("SAXO_SIM_TOKEN") or "").strip()
+        env_refresh = str(os.getenv("SAXO_SIM_REFRESH_TOKEN") or "").strip()
+        self.access_token = str(persisted_tokens.get("access_token") or env_access).strip()
+        self.refresh_token = str(persisted_tokens.get("refresh_token") or env_refresh).strip()
         self.account_connected = False
         self.last_successful_poll = None
         self._last_log = None
@@ -191,6 +201,21 @@ class SaxoSimEngine:
             "bytes_day": self.bytes_day, "bytes_month": self.bytes_month,
         })
 
+    def _persist_tokens(self) -> None:
+        if not (self.access_token or self.refresh_token):
+            return
+        payload = {
+            "access_token": self.access_token,
+            "refresh_token": self.refresh_token,
+            "saved_at": _now_iso(),
+            "environment": "SIM",
+        }
+        _write_json(self.token_state_path, payload)
+        try:
+            os.chmod(self.token_state_path, 0o600)
+        except Exception:
+            pass
+
     def _refresh_access_token(self) -> bool:
         if not self._render_allows_norway() or not self._budget_ok():
             raise SaxoSimError("SAXO_SIM_TOKEN_REFRESH_GUARD")
@@ -215,6 +240,8 @@ class SaxoSimEngine:
         new_refresh = str(data.get("refresh_token") or "").strip()
         if new_refresh:
             self.refresh_token = new_refresh
+        # Critical for Saxo: every refresh may rotate/replace the refresh token.
+        self._persist_tokens()
         return True
 
     def _request(self, method: str, path: str, *, params: Dict[str, Any] | None = None,
@@ -240,8 +267,14 @@ class SaxoSimEngine:
         r = self.session.request(method, url, params=params, json=body, headers=headers, timeout=25, allow_redirects=False)
         req_size = len(json.dumps(body, ensure_ascii=False).encode("utf-8")) if body is not None else 0
         self._record_bytes(req_size, len(r.content or b""))
-        if r.status_code == 401 and retry_auth and self._refresh_access_token():
-            return self._request(method, path, params=params, body=body, retry_auth=False)
+        if r.status_code == 401 and retry_auth:
+            if self.refresh_token and self.app_key and self.app_secret:
+                if self._refresh_access_token():
+                    return self._request(method, path, params=params, body=body, retry_auth=False)
+            raise SaxoSimError(
+                "SAXO_SIM_ACCESS_TOKEN_EXPIRED: OAuth refresh credentials are missing; "
+                "set SAXO_SIM_REFRESH_TOKEN + SAXO_SIM_APP_KEY + SAXO_SIM_APP_SECRET"
+            )
         if r.status_code == 429:
             from corporate_backoff import retry_seconds
             self.cooldown_until = time.monotonic() + max(300, retry_seconds(r.headers.get("Retry-After")))
@@ -435,6 +468,9 @@ class SaxoSimEngine:
             "last_successful_poll": self.last_successful_poll,
             "enabled": self.enabled,
             "configured": self.configured,
+            "auth_mode": "oauth_refresh" if (self.refresh_token and self.app_key and self.app_secret) else "manual_24h_token",
+            "oauth_refresh_ready": bool(self.refresh_token and self.app_key and self.app_secret),
+            "token_persisted": self.token_state_path.exists(),
             "paper": True,
             "environment": "SIM",
             "base_url": SIM_BASE,
