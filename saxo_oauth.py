@@ -142,7 +142,7 @@ def register_saxo_oauth(app, engine):
                               "redirect_uri": SIM_REDIRECT_URI},
                         timeout=20, allow_redirects=False,
                     )
-                    if token_response.status_code != 200:
+                    if not 200 <= token_response.status_code < 300:
                         log.warning("SAXO_SIM_OAUTH token_exchange_rejected http_status=%d", token_response.status_code)
                         return finish("token_rejected" if token_response.status_code in (400, 401, 403) else "token_http_error")
                     data = token_response.json()
