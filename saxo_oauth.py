@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import hmac
+import logging
 import secrets
 import threading
 import time
@@ -13,6 +14,7 @@ from flask import make_response, redirect, render_template_string, request
 SIM_AUTHORIZE_URL = "https://sim.logonvalidation.net/authorize"
 SIM_TOKEN_URL = "https://sim.logonvalidation.net/token"
 SIM_REDIRECT_URI = "https://trading-remote.onrender.com/saxo/oauth/callback"
+log = logging.getLogger(__name__)
 COOKIE = "__Host-saxo_sim_oauth"
 FLOW_TTL = 600
 
@@ -141,12 +143,14 @@ def register_saxo_oauth(app, engine):
                         timeout=20, allow_redirects=False,
                     )
                     if token_response.status_code != 200:
-                        raise ValueError("Token exchange rejected")
+                        log.warning("SAXO_SIM_OAUTH token_exchange_rejected http_status=%d", token_response.status_code)
+                        return finish("token_rejected" if token_response.status_code in (400, 401, 403) else "token_http_error")
                     data = token_response.json()
                     access = data.get("access_token") if isinstance(data, dict) else None
                     refresh = data.get("refresh_token") if isinstance(data, dict) else None
                     if not isinstance(access, str) or not access.strip() or not isinstance(refresh, str) or not refresh.strip():
-                        raise ValueError("Token pair missing")
+                        log.warning("SAXO_SIM_OAUTH response_missing_token_pair")
+                        return finish("token_response_invalid")
                     now = time.time()
                     access_ttl = engine._expiry(data.get("expires_in"))
                     refresh_ttl = engine._expiry(data.get("refresh_token_expires_in"))
@@ -166,9 +170,12 @@ def register_saxo_oauth(app, engine):
                     except OSError:
                         pass
                 return finish("success")
+            except OSError:
+                log.warning("SAXO_SIM_OAUTH token_storage_io_error")
+                return finish("storage_failed")
             except Exception:
-                # Network/storage errors may carry credentials or codes. Never
-                # include exception strings or raw OAuth errors in the response.
+                # Never log exception text because it may contain secrets.
+                log.warning("SAXO_SIM_OAUTH token_exchange_or_persist_failed")
                 return finish("failed")
 
     @app.get("/saxo/oauth/result")
@@ -181,6 +188,10 @@ def register_saxo_oauth(app, engine):
             "declined": "Saxo-innloggingen ble ikke fullført. Start på nytt fra TradingBot.",
             "config": "Saxo SIM-oppsettet mangler. Kontroller variablene i Render.",
             "guard": "SIM-innloggingen er midlertidig stoppet av trafikkgrensen.",
+            "token_rejected": "Saxo avviste token-utvekslingen (HTTP 400/401/403). Kontroller SIM AppKey, AppSecret og registrert redirect-URL: https://trading-remote.onrender.com/saxo/oauth/callback.",
+            "token_http_error": "Saxo token-tjenesten svarte med en HTTP-feil. Se Render-loggene for statuskode.",
+            "token_response_invalid": "Saxo returnerte ikke baade access-token og refresh-token. Kontroller appens OAuth-konfigurasjon.",
+            "storage_failed": "Token kunne ikke lagres paa Render-disken. Kontroller disk og tilgang.",
             "failed": "Saxo SIM-innloggingen kunne ikke lagres eller fullføres. Kontroller appopplysningene og prøv igjen fra TradingBot.",
         }
         return page(messages.get(request.args.get("outcome"), "Kontroller Saxo SIM-status i TradingBot."))
