@@ -2382,7 +2382,7 @@ HTML = r"""\n<!doctype html>
     <div class="kpiCard"><div class="kpiHead"><span class="kpiIcon">☁</span>Cloud 24/7</div><div id="kpi_cloud" class="kpiValue">-</div></div>
     <div class="kpiCard"><div class="kpiHead"><span class="kpiIcon">⇅</span>Render data</div><div id="kpi_usage" class="kpiValue">-</div></div>
     <div class="kpiCard"><div class="kpiHead"><span class="kpiIcon">A</span>Alpaca</div><div id="kpi_alpaca" class="kpiValue">-</div></div>
-    <div class="kpiCard saxoKpi"><div class="kpiHead"><span class="kpiIcon">NO</span>Norge SIM</div><div id="kpi_saxo" class="kpiValue">-</div><div id="saxoDetails" style="font-size:12px;white-space:pre-line"></div></div>
+    <div class="kpiCard saxoKpi"><div class="kpiHead"><span class="kpiIcon">NO</span>Norge SIM</div><div id="kpi_saxo" class="kpiValue">-</div><div id="saxoDetails" style="font-size:12px;white-space:pre-line"></div><a class="btn ghost" href="/saxo/oauth" style="display:inline-block;margin-top:10px;text-align:center">Koble til Saxo SIM</a></div>
     <div class="kpiCard"><div class="kpiHead"><span class="kpiIcon">◷</span>Sist oppdatert</div><div id="kpi_updated" class="kpiValue">-</div></div>
   </section>
 
