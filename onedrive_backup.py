@@ -285,6 +285,11 @@ class OneDriveBackup:
         return removed
 
     def backup_once(self):
+        # Never export a live-trading instance as a paper-learning backup.
+        if os.getenv("ALPACA_PAPER", "true").lower() not in ("1", "true", "yes", "on"):
+            self.health_data["last_error"] = "PAPER_ONLY_REQUIRED"
+            self._save_health()
+            return False
         if not self.configured() or not self.connected():
             return False
         if not self.backup_lock.acquire(blocking=False):
