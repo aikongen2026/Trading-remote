@@ -1,0 +1,14 @@
+name: OneDrive PowerShell compatibility
+on:
+  pull_request:
+    paths:
+      - 'scripts/connect-onedrive-v2.ps1'
+      - '.github/workflows/onedrive-powershell.yml'
+jobs:
+  powershell-51:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test native stderr handling in Windows PowerShell 5.1
+        shell: powershell
+        run: .\scripts\connect-onedrive-v2.ps1 -SelfTest
