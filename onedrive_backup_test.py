@@ -116,6 +116,13 @@ class OneDriveBackupTests(unittest.TestCase):
         self.assertFalse(self.session.files)
         self.assertEqual(self.backup.status()["last_error"], "WRONG_ONEDRIVE_ACCOUNT")
 
+    def test_live_mode_never_exports_evidence(self):
+        self.backup._store_refresh_token("R"*25)
+        with patch.dict(os.environ, {"ALPACA_PAPER": "false"}):
+            self.assertFalse(self.backup.backup_once())
+        self.assertEqual(self.backup.status()["last_error"], "PAPER_ONLY_REQUIRED")
+        self.assertEqual(self.session.files, {})
+
     def test_without_microsoft_credentials_stays_disabled(self):
         with patch.dict(os.environ, {"ONEDRIVE_CLIENT_ID": "", "ONEDRIVE_CLIENT_SECRET": ""}):
             safe = OneDriveBackup(self.root, session=self.session)
