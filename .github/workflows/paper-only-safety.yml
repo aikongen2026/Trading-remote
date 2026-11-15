@@ -1,0 +1,29 @@
+name: Paper-only code safety
+on:
+  pull_request:
+  push:
+    branches:
+      - fix/paper-learning-data-integrity-20261115
+jobs:
+  syntax-and-safety:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Python syntax
+        run: python -m compileall -q .
+      - name: Verify paper-only order guards exist
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          bot = Path('trading_bot.py').read_text()
+          assert 'PAPER_ONLY_BLOCK' in bot
+          assert 'https://paper-api.alpaca.markets' in bot
+          assert 'if not cfg.paper or cfg.trading_base.rstrip("/") != "https://paper-api.alpaca.markets"' in bot
+          sim = Path('saxo_sim.py').read_text()
+          assert 'sim' in sim.lower()
+          PY
+      - name: Standard library unit tests
+        run: python -m unittest discover -s tests -p 'test*.py' -v
