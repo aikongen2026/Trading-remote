@@ -100,6 +100,9 @@ if ($SelfTest) {
     # Test installation script without changing PC, logging in or scheduling jobs.
     if ($baseUrl -ne 'https://trading-remote.onrender.com') { throw 'Ugyldig endpoint.' }
     if ($target -notlike '*OneDrive - Straye AS*Lagring') { throw 'Feil maalmappe.' }
+    $trialTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddHours(1) -RepetitionInterval (New-TimeSpan -Hours 1) -RepetitionDuration (New-TimeSpan -Days 3650)
+    $trialSettings = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 20) -MultipleInstances IgnoreNew
+    if (-not $trialTrigger -or -not $trialSettings) { throw 'Windows Task Scheduler setup feilet.' }
     Write-Host 'Backup script self-test OK' -ForegroundColor Green
     return
 }
