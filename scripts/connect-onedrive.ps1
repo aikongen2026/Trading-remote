@@ -31,7 +31,7 @@ $matched = [regex]::Match($consoleText, '(?s)(\{"access_token".*?\})')
 if (-not $matched.Success) {
     throw 'Fant ikke et gyldig OneDrive-token fra rclone. Ingen opplysninger er sendt.'
 }
-try { $token = $matched.Value | ConvertFrom-Json -AsHashtable }
+try { $token = $matched.Value | ConvertFrom-Json }
 catch { throw 'Kunne ikke lese Microsoft-token. Ingen opplysninger er sendt.' }
 if (-not $token.access_token -or -not $token.refresh_token -or -not $token.expiry) {
     throw 'Token mangler paakrevde felter. Ingen opplysninger er sendt.'
