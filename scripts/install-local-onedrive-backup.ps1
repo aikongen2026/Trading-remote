@@ -1,5 +1,5 @@
 # Trading Bot evidence backup -> existing Windows OneDrive sync folder.
-# One-time installer and scheduled hourly downloader. No OAuth/cloud app setup.
+# One-time on-demand downloader; no hourly network costs. No OAuth/cloud app setup.
 # Password stored encrypted with Windows DPAPI for the current user only.
 param([switch]$RunBackup, [switch]$SelfTest)
 $ErrorActionPreference = 'Stop'
@@ -123,13 +123,11 @@ $secure = Read-Host 'Skriv Trading Bot-passordet EN gang (ikke OneDrive-passord)
 $secure | ConvertFrom-SecureString | Set-Content -LiteralPath $credFile -Encoding UTF8
 Write-Host 'Tester full sikkerhetskopiering mot Render ...'
 $null = Invoke-Backup
-# Task runs in the interactive user account (required to decrypt DPAPI and
-# to keep files inside the user's already-authenticated OneDrive sync folder).
-$identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-$action = New-ScheduledTaskAction -Execute (Join-Path $PSHOME 'powershell.exe') -Argument ('-NoProfile -ExecutionPolicy Bypass -File "' + $scriptPath + '" -RunBackup')
-$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddHours(1) -RepetitionInterval (New-TimeSpan -Hours 1) -RepetitionDuration (New-TimeSpan -Days 3650)
-$principal = New-ScheduledTaskPrincipal -UserId $identity -LogonType Interactive -RunLevel LeastPrivilege
-$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 20) -MultipleInstances IgnoreNew
-Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
-Write-Host 'FERDIG: Forste backup er kontrollert og lagret. Automatisk hver time naar du er innlogget paa PC-en.' -ForegroundColor Green
-Write-Host 'Du trenger ikke konfigurere Microsoft eller Google.'
+# Explicit cost protection: no automatic repeat download is created.
+# Existing schedules from older versions should be disabled manually as well.
+$task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+if ($task) {
+    Disable-ScheduledTask -TaskName $taskName | Out-Null
+    Write-Host 'Tidligere timejobb er deaktivert for aa forhindre uventede Render-trafikkutgifter.' -ForegroundColor Yellow
+}
+Write-Host 'FERDIG: Verifisert sikkerhetskopi lagret i OneDrive. Ingen automatisk timejobb er aktiv.' -ForegroundColor Green
