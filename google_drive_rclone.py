@@ -16,7 +16,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from onedrive_backup import Google DriveBackup
+from onedrive_backup import OneDriveBackup
 
 class GoogleDriveBackupError(Exception):
     """Safe error code; never expose access tokens or rclone stderr."""
@@ -156,7 +156,7 @@ class GoogleDriveBackup:
                 records = []
                 with tempfile.TemporaryDirectory(prefix="trbot-backup-") as tmp:
                     for name in names:
-                        content, raw_hash = Google DriveBackup._snapshot_db(self.state / name)
+                        content, raw_hash = OneDriveBackup._snapshot_db(self.state / name)
                         path = Path(tmp) / (prefix + name + ".gz")
                         path.write_bytes(content)
                         self._verified_upload(path, self.folder + "/" + path.name)
