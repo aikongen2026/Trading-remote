@@ -8,6 +8,7 @@ import gzip
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -91,10 +92,9 @@ class GoogleDriveBackup:
         # The rclone shared Google client is retired; a personal OAuth desktop
         # client is required for continued token refresh in unattended mode.
         if (not isinstance(client_id, str) or
-                not client_id.endswith(".apps.googleusercontent.com") or
-                len(client_id) > 256 or
+                not re.fullmatch(r"[A-Za-z0-9._-]{1,230}\\.apps\\.googleusercontent\\.com", client_id) or
                 not isinstance(client_secret, str) or
-                len(client_secret) > 256 or not client_secret):
+                not re.fullmatch(r"[A-Za-z0-9._-]{5,256}", client_secret)):
             raise GoogleDriveBackupError("GOOGLE_OAUTH_CLIENT_REQUIRED")
         if not isinstance(token, dict):
             raise GoogleDriveBackupError("TOKEN_INVALID")
