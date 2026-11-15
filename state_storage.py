@@ -15,6 +15,7 @@ import time
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
+from datetime import timedelta
 
 FILES=('learning_v3.sqlite','runtime_audit.sqlite','broker_history.sqlite')
 MAX_BYTES=64*1024*1024
@@ -119,12 +120,71 @@ class StateBackup:
         except Exception as exc: self.status['last_error']=type(exc).__name__
         self._save_health()
 
+    def local_snapshot(self):
+        """Keep rotating verified SQLite evidence snapshots on Render's mounted disk.
+
+        These are local recovery copies, NOT an offsite disaster-recovery backup.
+        Live orders, credentials and execution intents are never snapshotted.
+        """
+        if (os.getenv('RENDER') or '').lower() in {'true','1','yes'} and not self.state.resolve().is_relative_to(Path('/var/data').resolve()):
+            self.status['local_snapshot_error']='not_persistent_mount'
+            self._save_health()
+            return
+        target_dir=self.state/'evidence_snapshots'
+        target_dir.mkdir(parents=True, exist_ok=True)
+        now=datetime.now(timezone.utc)
+        marker=target_dir/'last_success.json'
+        try:
+            last=json.loads(marker.read_text(encoding='utf-8'))
+            stamp=datetime.fromisoformat(last.get('timestamp',''))
+            if (now-stamp).total_seconds()<3600:
+                return
+        except (OSError,ValueError,TypeError):
+            pass
+        try:
+            names=[]
+            stamp=now.strftime('%Y%m%dT%H%M%SZ')
+            for name in FILES:
+                path=self.state/name
+                if not path.is_file():
+                    continue
+                with tempfile.TemporaryDirectory(dir=target_dir) as tmpdir:
+                    staged=Path(tmpdir)/name
+                    with closing(sqlite3.connect('file:'+path.as_posix()+'?mode=ro',uri=True,timeout=5)) as src, closing(sqlite3.connect(str(staged))) as dst:
+                        src.backup(dst)
+                    if staged.stat().st_size>MAX_BYTES:
+                        raise ValueError('Snapshot size limit')
+                    with closing(sqlite3.connect(str(staged))) as check:
+                        if check.execute('PRAGMA integrity_check').fetchone()[0]!='ok':
+                            raise ValueError('Snapshot integrity failed')
+                    raw=staged.read_bytes()
+                    out=target_dir/(name+'.'+stamp+'.gz')
+                    pending=out.with_suffix(out.suffix+'.tmp')
+                    pending.write_bytes(gzip.compress(raw,compresslevel=1))
+                    os.replace(pending,out)
+                    names.append(out.name)
+            if not names:
+                self.status['local_snapshot_error']='no_database_files'
+            else:
+                marker_tmp=marker.with_suffix('.tmp')
+                marker_tmp.write_text(json.dumps({'timestamp':now.isoformat(),'files':names}),encoding='utf-8')
+                os.replace(marker_tmp,marker)
+                self.status.update(local_snapshot_utc=now.isoformat(),local_snapshot_error='')
+                # Six snapshots per database, max ~six hours of local recovery.
+                for name in FILES:
+                    old=sorted(target_dir.glob(name+'.*.gz'))
+                    for item in old[:-6]:
+                        item.unlink(missing_ok=True)
+        except Exception as exc:
+            self.status['local_snapshot_error']=type(exc).__name__
+        self._save_health()
+
     def start(self):
         def run():
             while not self.stop.is_set():
                 # Restore is a startup operation. Never overwrite a database after
                 # the engine has opened it; a failed restore requires a restart.
                 self.checkpoint()
+                self.local_snapshot()
                 self.stop.wait(300)
-        if self.status['configured']:
-            threading.Thread(target=run,name='audit-checkpoints',daemon=True).start()
+        threading.Thread(target=run,name='audit-checkpoints',daemon=True).start()
