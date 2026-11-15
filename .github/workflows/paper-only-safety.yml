@@ -29,3 +29,5 @@ jobs:
           PY
       - name: Standard library unit tests
         run: python -m unittest discover -s tests -p 'test*.py' -v
+      - name: OneDrive backups regression tests
+        run: python -m unittest onedrive_backup_test -v

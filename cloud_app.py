@@ -55,6 +55,8 @@ from control_server import app, patch_control, safe_read_json, safe_write_json, 
 from render_usage_guard import RenderUsageGuard
 from saxo_sim import SaxoSimEngine
 from saxo_oauth import register_saxo_oauth
+from onedrive_backup import OneDriveBackup
+from onedrive_oauth import register_onedrive_oauth
 
 # Install monkey-patches before the engine constructs AlpacaRest / IntelligenceEngine.
 # The sidecar itself starts only after persistent state has been restored.
@@ -62,6 +64,8 @@ ALPACA_EDGE = install_v49(trading_bot)
 RENDER_USAGE_GUARD = RenderUsageGuard(trading_bot.STATE_DIR)
 SAXO_SIM = SaxoSimEngine(trading_bot.STATE_DIR)
 register_saxo_oauth(app, SAXO_SIM)
+ONEDRIVE_BACKUP = OneDriveBackup(trading_bot.STATE_DIR)
+register_onedrive_oauth(app, ONEDRIVE_BACKUP)
 
 ENGINE_THREAD: threading.Thread | None = None
 ENGINE_LOCK = threading.Lock()
@@ -157,6 +161,7 @@ def main() -> None:
     SAXO_SIM.start()
     start_engine()
     backup.start()
+    ONEDRIVE_BACKUP.start()
     threading.Thread(target=watchdog, name="engine-watchdog", daemon=True).start()
     host = "0.0.0.0"
     port = int(os.getenv("PORT", "10000"))

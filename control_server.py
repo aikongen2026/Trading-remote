@@ -110,7 +110,7 @@ def require_login():
     p = request.path
     # The SIM OAuth callback validates one-time state and a dedicated browser
     # cookie. Keep the dashboard session cookie Strict, including during OAuth.
-    public = p in {"/login", "/healthz", "/manifest.webmanifest", "/service-worker.js", "/saxo/oauth/callback", "/saxo/oauth/result"} or p.startswith("/static/")
+    public = p in {"/login", "/healthz", "/manifest.webmanifest", "/service-worker.js", "/saxo/oauth/callback", "/saxo/oauth/result", "/onedrive/oauth/callback", "/onedrive/oauth/result"} or p.startswith("/static/")
     if public or is_authed():
         return None
     if p.startswith("/api/"):
