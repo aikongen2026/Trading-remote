@@ -1,0 +1,14 @@
+name: Google Drive PowerShell compatibility
+on:
+  pull_request:
+    paths:
+      - 'scripts/connect-google-drive.ps1'
+      - '.github/workflows/google-drive-powershell.yml'
+jobs:
+  powershell-51:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test native stderr handling in Windows PowerShell 5.1
+        shell: powershell
+        run: .\scripts\connect-google-drive.ps1 -SelfTest

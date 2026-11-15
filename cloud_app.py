@@ -58,6 +58,7 @@ from saxo_oauth import register_saxo_oauth
 from onedrive_backup import OneDriveBackup
 from onedrive_oauth import register_onedrive_oauth
 from onedrive_rclone import RcloneBackup
+from google_drive_rclone import GoogleDriveBackup, GoogleDriveBackupError
 from onedrive_backup import OneDriveBackupError
 from flask import jsonify, request
 import hmac
@@ -71,6 +72,7 @@ register_saxo_oauth(app, SAXO_SIM)
 ONEDRIVE_BACKUP = OneDriveBackup(trading_bot.STATE_DIR)
 register_onedrive_oauth(app, ONEDRIVE_BACKUP)
 RCLONE_BACKUP = RcloneBackup(trading_bot.STATE_DIR)
+GOOGLE_BACKUP = GoogleDriveBackup(trading_bot.STATE_DIR)
 _PAIR_FAILURES = []
 _PAIR_LOCK = threading.Lock()
 
@@ -104,6 +106,41 @@ def onedrive_pair():
         return jsonify({"ok": False, "error": str(exc) if isinstance(exc, OneDriveBackupError)
                         else "setup_failed"}), 400
     return jsonify({"ok": True, "status": RCLONE_BACKUP.status()})
+
+@app.post("/api/google-drive/pair")
+def google_drive_pair():
+    # Browser session is not used here: explicit dashboard password and HTTPS
+    # are required, and this route cannot change trading control state.
+    if not request.is_secure:
+        return jsonify({"ok": False, "error": "https_required"}), 403
+    now = time.monotonic()
+    with _PAIR_LOCK:
+        _PAIR_FAILURES[:] = [x for x in _PAIR_FAILURES if now - x < 3600]
+        if len(_PAIR_FAILURES) >= 10:
+            return jsonify({"ok": False, "error": "rate_limited"}), 429
+        supplied = request.headers.get("X-Setup-Password", "")
+        expected = os.getenv("DASHBOARD_PASSWORD", "").strip()
+        if not expected or not hmac.compare_digest(supplied, expected):
+            _PAIR_FAILURES.append(now)
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
+    if not env_bool("ALPACA_PAPER", True):
+        return jsonify({"ok": False, "error": "paper_only_required"}), 403
+    if not request.is_json:
+        return jsonify({"ok": False, "error": "json_required"}), 400
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict) or not isinstance(payload.get("token"), dict):
+        return jsonify({"ok": False, "error": "invalid_request"}), 400
+    try:
+        GOOGLE_BACKUP.connect(payload["token"])
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc) if isinstance(exc, GoogleDriveBackupError)
+                        else "setup_failed"}), 400
+    return jsonify({"ok": True, "status": GOOGLE_BACKUP.status()})
+
+@app.get("/api/google-drive/status")
+def google_drive_status():
+    return jsonify(GOOGLE_BACKUP.status())
+
 
 @app.get("/api/onedrive/status")
 def onedrive_status():
@@ -206,6 +243,7 @@ def main() -> None:
     backup.start()
     ONEDRIVE_BACKUP.start()
     RCLONE_BACKUP.start()
+    GOOGLE_BACKUP.start()
     threading.Thread(target=watchdog, name="engine-watchdog", daemon=True).start()
     host = "0.0.0.0"
     port = int(os.getenv("PORT", "10000"))
