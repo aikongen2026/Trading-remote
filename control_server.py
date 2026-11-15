@@ -1549,6 +1549,17 @@ HTML = r"""\n<!doctype html>
       *,*:before,*:after{animation:none!important;transition:none!important}
     }
   
+    /* Same HUD appearance, now keyboard/mouse accessible. */
+    .hudRailActual{pointer-events:auto !important}
+    .hudRailActual>div{cursor:pointer}
+    .hudRailActual>div:focus-visible{outline:2px solid #78eaff;outline-offset:2px}
+    .hudQuickPanel[hidden]{display:none !important}
+    .hudQuickPanel{position:fixed;z-index:85;top:75px;left:68px;width:min(390px,calc(100vw - 85px));max-height:75vh;overflow:auto;padding:15px;background:linear-gradient(180deg,#041c35,#020f1e);color:#e6f8ff;border:1px solid #29cfff;border-radius:12px;box-shadow:0 12px 35px #000b;font:12px system-ui;line-height:1.5}
+    .hudQuickTop{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;font-size:15px}
+    .hudQuickTop button{background:transparent;border:1px solid #2a789e;border-radius:7px;color:#b9f1ff;cursor:pointer;padding:3px 9px}
+    .hudQuickPanel table{width:100%;border-collapse:collapse}
+    .hudQuickPanel td{padding:5px 3px;border-bottom:1px solid #174362;overflow-wrap:anywhere}
+    .hudQuickPanel td:last-child{text-align:right;max-width:230px}
     /* ===== FORSLAG 4 EXACT DESKTOP V4 - VISUAL/LAYOUT ONLY ===== */
     html,body{
       width:100vw !important;
@@ -2338,15 +2349,19 @@ HTML = r"""\n<!doctype html>
 </head>
 <body>
 <!-- FORSLAG4-ACTUAL-HUD -->
-<aside class="hudRailActual" aria-hidden="true">
-  <div class="hudHome">⌂</div>
-  <div>↗</div>
-  <div>▥</div>
-  <div>⚙</div>
-  <div>◉</div>
-  <div>▤</div>
-  <div>↗</div>
+<aside class="hudRailActual" aria-label="Hurtigmeny">
+  <div class="hudHome" role="button" tabindex="0" title="Hjem" aria-label="Hjem" onclick="hudNavigate('home')" onkeydown="hudKey(event,'home')">⌂</div>
+  <div role="button" tabindex="0" title="Resultater" aria-label="Resultater" onclick="hudNavigate('results')" onkeydown="hudKey(event,'results')">↗</div>
+  <div role="button" tabindex="0" title="Posisjoner og ordre" aria-label="Posisjoner og ordre" onclick="hudNavigate('positions')" onkeydown="hudKey(event,'positions')">▥</div>
+  <div role="button" tabindex="0" title="Innstillinger" aria-label="Innstillinger" onclick="hudNavigate('settings')" onkeydown="hudKey(event,'settings')">⚙</div>
+  <div role="button" tabindex="0" title="Markedsdata" aria-label="Markedsdata" onclick="hudNavigate('market')" onkeydown="hudKey(event,'market')">◉</div>
+  <div role="button" tabindex="0" title="AI-læring" aria-label="AI-læring" onclick="hudNavigate('learning')" onkeydown="hudKey(event,'learning')">▤</div>
+  <div role="button" tabindex="0" title="Rapporter" aria-label="Rapporter" onclick="hudNavigate('reports')" onkeydown="hudKey(event,'reports')">↗</div>
 </aside>
+<section id="hudQuickPanel" class="hudQuickPanel" role="dialog" aria-modal="false" aria-label="Detaljer" hidden>
+  <div class="hudQuickTop"><strong id="hudQuickTitle"></strong><button type="button" onclick="hudClose()" title="Lukk" aria-label="Lukk">×</button></div>
+  <div id="hudQuickBody"></div>
+</section>
 <div class="wrap">
   <header class="topbar">
     <div class="brand">
@@ -2508,6 +2523,49 @@ async function setStrategy(){const s=document.getElementById('strategySel').valu
 async function setProfile(n){const p=n==='balanced'?{activity_profile:'balanced',intelligence_entry_score:67,intelligence_exit_score:42,strategy_mode:'scalp',fast_sma:8,slow_sma:24,hype_mom_n:5,min_mom_pct:.001,min_move_pct:.0003,min_slope_pct:.00025,cooldown_sec:90,take_profit_pct:.006,stop_loss_pct:.004,trailing_activate_pct:.003,trailing_stop_pct:.003,max_hold_sec:2700,refresh_bars_every_sec:15,crypto_strategy_mode:'scalp',crypto_cooldown_sec:60,crypto_take_profit_pct:.012,crypto_stop_loss_pct:.007,crypto_trailing_activate_pct:.007,crypto_trailing_stop_pct:.0045,crypto_max_hold_sec:3600,crypto_max_spread_bps:15,crypto_taker_fee_bps:25,crypto_min_net_edge_bps:30,crypto_entry_confirm_bars:2}:{activity_profile:'active',intelligence_entry_score:60,intelligence_exit_score:38,strategy_mode:'scalp',fast_sma:6,slow_sma:18,hype_mom_n:4,min_mom_pct:.0006,min_move_pct:.00015,min_slope_pct:.00015,cooldown_sec:45,take_profit_pct:.004,stop_loss_pct:.003,trailing_activate_pct:.002,trailing_stop_pct:.0025,max_hold_sec:1800,refresh_bars_every_sec:10,crypto_strategy_mode:'scalp',crypto_cooldown_sec:30,crypto_take_profit_pct:.01,crypto_stop_loss_pct:.006,crypto_trailing_activate_pct:.006,crypto_trailing_stop_pct:.004,crypto_max_hold_sec:2700,crypto_max_spread_bps:25,crypto_taker_fee_bps:25,crypto_min_net_edge_bps:20,crypto_entry_confirm_bars:2};await postControl('/api/control',p)}
 async function testBuy(){await postControl('/api/test_buy',{symbol:document.getElementById('buySym').value.trim().toUpperCase(),qty:Number(document.getElementById('buyQty').value||1)})}
 async function testSellAll(){await postControl('/api/test_sell_all',{symbol:document.getElementById('sellSym').value.trim().toUpperCase()})}
+let hudLatestStatus=null;
+function hudKey(event,target){if(event.key==='Enter'||event.key===' '){event.preventDefault();hudNavigate(target)}}
+function hudClose(){document.getElementById('hudQuickPanel').hidden=true}
+function hudNavigate(target){
+  if(target==='home'){hudClose();window.scrollTo({top:0,behavior:'smooth'});return}
+  if(target==='results'){hudClose();document.getElementById('profit_row_7')?.scrollIntoView({behavior:'smooth',block:'center'});return}
+  if(target==='positions'){hudClose();document.querySelector('.tableCard')?.scrollIntoView({behavior:'smooth',block:'start'});return}
+  if(target==='settings'){hudClose();const d=document.querySelector('.controlCard details.utility');if(d)d.open=true;document.querySelector('.controlCard')?.scrollIntoView({behavior:'smooth',block:'start'});return}
+  if(target==='reports'){hudClose();document.querySelector('.exportBox')?.scrollIntoView({behavior:'smooth',block:'center'});document.getElementById('exportDays')?.focus();return}
+  if(target==='market'||target==='learning'){
+    const panel=document.getElementById('hudQuickPanel');
+    panel.hidden=false;
+    document.getElementById('hudQuickTitle').textContent=target==='market'?'Markedsdata':'AI-læring';
+    const st=hudLatestStatus||{};
+    const rows=[];
+    const add=(label,value)=>rows.push('<tr><td>'+safeHtml(label)+'</td><td>'+safeHtml(value??'-')+'</td></tr>');
+    if(target==='market'){
+      const health=st.intelligence?.source_health||{};
+      add('Aksjefeed',st.market_data?.stock_feed);
+      add('Kryptofeed',health.crypto_stream);
+      add('Aksjestrøm',health.stock_stream);
+      add('Nyheter',health.alpaca_news);
+      add('GDELT',health.gdelt);
+      add('SEC',health.sec);
+      const symbols=Object.values(st.symbols||{}).filter(x=>x.market==='CRYPTO');
+      add('Krypto: gamle kurser',symbols.filter(x=>String(x.action||'').startsWith('QUOTE_STALE')).length+' / '+symbols.length);
+      add('Status',st.engine_state);
+    }else{
+      const diag=st.entry_diagnostics||{};
+      const shadow=st.adaptive_edge?.shadow?.models||{};
+      add('Positive signaler',diag.positive_signals??0);
+      for(const [reason,n] of Object.entries(diag.blocker_counts||{}))add('Blokkert: '+reason,n);
+      for(const [model,stats] of Object.entries(shadow)){
+        const label=model.replaceAll('_',' ');
+        add(label,'Målt: '+(stats.samples??0)+' • Treff: '+(stats.win_rate_pct??'-')+'% • Avkastning: '+(stats.avg_return_bps??'-')+' bp');
+        if(stats.outcome_coverage_pct!=null)add(label+' datadekning',stats.outcome_coverage_pct+'%');
+      }
+      add('Læringsdatabase',st.learning_health?.last_error||'Ingen rapportert feil');
+    }
+    document.getElementById('hudQuickBody').innerHTML='<table>'+rows.join('')+'</table>';
+  }
+}
+document.addEventListener('keydown',event=>{if(event.key==='Escape')hudClose()});
 function downloadAnalysis(){const el=document.getElementById('exportDays');let d=parseInt(el?.value||'7',10);if(!Number.isFinite(d))d=7;d=Math.max(1,Math.min(30,d));window.location.href='/api/export?days='+encodeURIComponent(d)}
 function setSymbolFilter(f,btn){symbolFilter=f;document.querySelectorAll('.filterBtn').forEach(x=>x.classList.remove('active'));if(btn)btn.classList.add('active');filterSymbols()}
 function filterSymbols(){const q=(document.getElementById('symbolSearch')?.value||'').trim().toUpperCase();document.querySelectorAll('#tblSymbols tr').forEach(tr=>{const market=(tr.dataset.market||'').toLowerCase(),pos=Number(tr.dataset.pos||0);const matchFilter=symbolFilter==='all'||(symbolFilter==='stocks'&&market==='stock')||(symbolFilter==='crypto'&&market==='crypto')||(symbolFilter==='active'&&pos!==0);const matchQ=!q||(tr.dataset.symbol||'').includes(q);tr.style.display=matchFilter&&matchQ?'':'none'})}
@@ -2516,7 +2574,7 @@ function renderOrders(o){const b=document.getElementById('tblOrders');b.innerHTM
 function setKpi(id,value,kind=''){const el=document.getElementById(id);if(!el)return;el.textContent=value??'-';el.className='kpiValue '+kind}
 let dashboardRefreshMs=10000;
 function updateKpis(s,running,cr,guardBad,guardPending){const p=s.profit_summary||{};const cls=v=>Number(v)>0?'pos':Number(v)<0?'neg':'';setKpi('kpi_today',money(p.today_usd??s.day_pnl_usd),cls(p.today_usd??s.day_pnl_usd));setKpi('kpi_3d',p.days3_usd==null?'-':money(p.days3_usd),cls(p.days3_usd));setKpi('kpi_7d',p.days7_usd==null?'-':money(p.days7_usd),cls(p.days7_usd));setKpi('kpi_guard',guardBad?'AVSTEM':guardPending?'EXIT':'OK',guardBad?'neg':'pos');setKpi('kpi_cloud',cr.render?(cr.always_on_expected?'24/7 OK':'FREE'):'LOKAL',cr.always_on_expected?'pos':cr.render?'warn':'');const ru=s.render_usage||{};const rup=String(ru.policy||'UNMETERED').toUpperCase();const usage=ru.percent==null?'IKKE KOBLET':Number(ru.used_gb||0).toFixed(2)+'/'+Number(ru.cap_gb||5).toFixed(0)+' GB';setKpi('kpi_usage',usage,(rup==='HARD'||rup==='OVER')?'neg':rup==='NORMAL'?'pos':'');dashboardRefreshMs=(rup==='HARD'||rup==='OVER')?60000:rup==='STRONG'?30000:rup==='SAVE'?20000:rup==='WARN'?15000:10000;setKpi('kpi_alpaca',s.auth_ok===true?'Tilkoblet':s.auth_ok===false?'Feil':'Venter',s.auth_ok===true?'pos':s.auth_ok===false?'neg':'');const sx=s.saxo_sim||{};const sxState=String(sx.state||'DISABLED');setKpi('kpi_saxo',sxState==='RUNNING_SIM'?'SIM AKTIV':sxState==='DISABLED'?'AV':sxState==='WAITING_FOR_SIM_TOKEN'?'VENTER TOKEN':sxState,sxState==='RUNNING_SIM'?'pos':sxState==='ERROR'?'neg':'');document.getElementById('saxoDetails').textContent='State: '+sxState+' • konto: '+(sx.account_connected===true?'tilkoblet':'ikke bekreftet')+'\nSymboler: '+Number(sx.symbols_resolved||0)+'/'+Number(sx.symbols_requested||0)+' • posisjoner: '+Number(sx.positions||0)+'\nTrafikk: '+Number(sx.traffic_day_mb||0).toFixed(2)+' MB i dag / '+Number(sx.traffic_month_mb||0).toFixed(2)+' MB måned\nSiste poll: '+(sx.last_successful_poll||'ingen')+'\n'+(sx.error||sx.note||'');const raw=String(s.last_update||'');let t='-';try{const d=new Date(raw);if(!Number.isNaN(d.getTime()))t=d.toLocaleTimeString('no-NO',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}catch(e){}setKpi('kpi_updated',t);const chip=document.getElementById('headerRunChip');if(chip){chip.textContent=running?'TRADING AKTIV':'TRADING PAUSET';chip.className='runChip '+(running?'on':'off')}}
-async function refresh(force=false){try{const r=await apiFetch('/api/status?ts='+Date.now()+(force?'&force=1':''));const s=await r.json();const live=Boolean(s.auth_ok)&&String(s.engine_state||'').toUpperCase()==='RUNNING';document.getElementById('liveDot').className='dot '+(live?'ok':'bad');document.getElementById('liveText').textContent=live?'ONLINE':'IKKE KLAR';const running=Boolean(s.armed)&&!Boolean(s.paused)&&!Boolean(s.kill);document.getElementById('st_engine').textContent=s.engine_state||'-';document.getElementById('st_version').textContent=s.version||'-';document.getElementById('st_auth').innerHTML=pill(s.auth_ok);document.getElementById('st_running').innerHTML=pill(running);const cr=s.cloud_runtime||{};const cloudEl=document.getElementById('st_cloud');if(cr.render){cloudEl.innerHTML=cr.always_on_expected?'<span class="pill good">24/7 OK</span>':'<span class="pill bad">RENDER FREE</span>'}else{cloudEl.innerHTML='<span class="pill neutral">LOKAL</span>'}const eg=s.execution_guard||{};const guardBad=Number(eg.reconcile_required||0)>0;const guardPending=Number(eg.active_exits||0)>0;document.getElementById('st_guard').innerHTML=guardBad?'<span class="pill bad">AVSTEM '+Number(eg.reconcile_required||0)+'</span>':guardPending?'<span class="pill neutral">EXIT '+Number(eg.active_exits||0)+'</span>':'<span class="pill good">OK</span>';updateKpis(s,running,cr,guardBad,guardPending);document.getElementById('st_market').textContent=(s.market_mode||'auto').toUpperCase();document.getElementById('st_session').textContent=s.stock_session||'-';document.getElementById('st_crypto').innerHTML=pill(s.crypto_24_7);document.getElementById('st_paper').innerHTML=pill(s.paper);document.getElementById('st_strategy').textContent=s.strategy_mode||'-';const ii=s.intelligence||{};document.getElementById('st_intel').innerHTML=pill(ii.enabled!==false);const pe=s.profit_engine||{};document.getElementById('st_edge').innerHTML=pill(pe.enabled!==false);const ah=s.audit_health||{},lh=s.learning_health||{},bh=s.broker_history||{},sb=s.storage_backup||{};const storageLabel=sb.configured?(sb.last_error?'backupfeil':sb.last_success_utc?'databasebackup hver 5. min':'backup venter'):ah.persistent===false?'midlertidig lagring':'lokal lagring';document.getElementById('auditSummary').textContent='Historikk: '+((ah.last_error||lh.last_error)?'lagringsfeil':storageLabel)+' • Alpaca '+(bh.stream||'starter')+' • '+(bh.sync_complete?'historikk hentet':'historikk venter');const ae=s.adaptive_edge||{},md=s.market_data||{};const sh=ae.shadow?.models||{};const shN=Object.values(sh).reduce((a,x)=>a+Number(x?.samples||0),0);document.getElementById('st_adaptive').textContent=`${String(md.stock_feed||'iex').toUpperCase()} • router ${ae.router?'ON':'OFF'} • univers ${Number(ae.active_symbols||0)}/${Number(ae.total_symbols||0)} • shadow ${shN}`;document.getElementById('st_regime').textContent=(ii.regime_label||'-')+' '+(ii.regime_score??'');document.getElementById('st_risk').textContent=(ii.global_risk??'-')+'/100';document.getElementById('st_news').textContent=ii.last_headline||'-';document.getElementById('st_pnl').textContent=fmt(s.day_pnl_usd);renderProfit(s.profit_summary||{today_usd:s.day_pnl_usd});document.getElementById('st_last').textContent=s.last_update||'';document.getElementById('st_notes').textContent=s.notes||'';document.getElementById('strategySel').value=s.strategy_mode||'scalp';document.getElementById('paperTests').style.display=s.paper===false?'none':'block';['auto','stocks','crypto'].forEach(m=>document.getElementById('m_'+m).classList.toggle('active',(s.market_mode||'auto')===m));const ab=document.getElementById('authBanner');if(s.auth_ok===false){ab.className='banner bad';ab.textContent='Alpaca avviser API-nøklene.'}else if(live&&cr.render&&cr.always_on_expected===false){ab.className='banner warn';ab.textContent='Trading kjører, men Render FREE kan sovne når dashboardet lukkes. Oppgrader Compute til 0.5c-512mb for ekte 24/7.'}else if(live){ab.className='banner good';ab.textContent=running?'Motor ONLINE – trading er STARTET.':'Motor ONLINE – trading er STOPPET/PAUSET.'}else{ab.className='banner warn';ab.textContent='Motoren starter eller restarter…'}renderSymbols(s.symbols||{});renderOrders(s.orders||[]);const lo=(s.orders||[])[0]?.id||'-';document.getElementById('lastOrderId').textContent=lo}catch(e){document.getElementById('liveDot').className='dot bad';document.getElementById('liveText').textContent='OFFLINE'}}
+async function refresh(force=false){try{const r=await apiFetch('/api/status?ts='+Date.now()+(force?'&force=1':''));const s=await r.json();hudLatestStatus=s;const live=Boolean(s.auth_ok)&&String(s.engine_state||'').toUpperCase()==='RUNNING';document.getElementById('liveDot').className='dot '+(live?'ok':'bad');document.getElementById('liveText').textContent=live?'ONLINE':'IKKE KLAR';const running=Boolean(s.armed)&&!Boolean(s.paused)&&!Boolean(s.kill);document.getElementById('st_engine').textContent=s.engine_state||'-';document.getElementById('st_version').textContent=s.version||'-';document.getElementById('st_auth').innerHTML=pill(s.auth_ok);document.getElementById('st_running').innerHTML=pill(running);const cr=s.cloud_runtime||{};const cloudEl=document.getElementById('st_cloud');if(cr.render){cloudEl.innerHTML=cr.always_on_expected?'<span class="pill good">24/7 OK</span>':'<span class="pill bad">RENDER FREE</span>'}else{cloudEl.innerHTML='<span class="pill neutral">LOKAL</span>'}const eg=s.execution_guard||{};const guardBad=Number(eg.reconcile_required||0)>0;const guardPending=Number(eg.active_exits||0)>0;document.getElementById('st_guard').innerHTML=guardBad?'<span class="pill bad">AVSTEM '+Number(eg.reconcile_required||0)+'</span>':guardPending?'<span class="pill neutral">EXIT '+Number(eg.active_exits||0)+'</span>':'<span class="pill good">OK</span>';updateKpis(s,running,cr,guardBad,guardPending);document.getElementById('st_market').textContent=(s.market_mode||'auto').toUpperCase();document.getElementById('st_session').textContent=s.stock_session||'-';document.getElementById('st_crypto').innerHTML=pill(s.crypto_24_7);document.getElementById('st_paper').innerHTML=pill(s.paper);document.getElementById('st_strategy').textContent=s.strategy_mode||'-';const ii=s.intelligence||{};document.getElementById('st_intel').innerHTML=pill(ii.enabled!==false);const pe=s.profit_engine||{};document.getElementById('st_edge').innerHTML=pill(pe.enabled!==false);const ah=s.audit_health||{},lh=s.learning_health||{},bh=s.broker_history||{},sb=s.storage_backup||{};const storageLabel=sb.configured?(sb.last_error?'backupfeil':sb.last_success_utc?'databasebackup hver 5. min':'backup venter'):ah.persistent===false?'midlertidig lagring':'lokal lagring';document.getElementById('auditSummary').textContent='Historikk: '+((ah.last_error||lh.last_error)?'lagringsfeil':storageLabel)+' • Alpaca '+(bh.stream||'starter')+' • '+(bh.sync_complete?'historikk hentet':'historikk venter');const ae=s.adaptive_edge||{},md=s.market_data||{};const sh=ae.shadow?.models||{};const shN=Object.values(sh).reduce((a,x)=>a+Number(x?.samples||0),0);document.getElementById('st_adaptive').textContent=`${String(md.stock_feed||'iex').toUpperCase()} • router ${ae.router?'ON':'OFF'} • univers ${Number(ae.active_symbols||0)}/${Number(ae.total_symbols||0)} • shadow ${shN}`;document.getElementById('st_regime').textContent=(ii.regime_label||'-')+' '+(ii.regime_score??'');document.getElementById('st_risk').textContent=(ii.global_risk??'-')+'/100';document.getElementById('st_news').textContent=ii.last_headline||'-';document.getElementById('st_pnl').textContent=fmt(s.day_pnl_usd);renderProfit(s.profit_summary||{today_usd:s.day_pnl_usd});document.getElementById('st_last').textContent=s.last_update||'';document.getElementById('st_notes').textContent=s.notes||'';document.getElementById('strategySel').value=s.strategy_mode||'scalp';document.getElementById('paperTests').style.display=s.paper===false?'none':'block';['auto','stocks','crypto'].forEach(m=>document.getElementById('m_'+m).classList.toggle('active',(s.market_mode||'auto')===m));const ab=document.getElementById('authBanner');if(s.auth_ok===false){ab.className='banner bad';ab.textContent='Alpaca avviser API-nøklene.'}else if(live&&cr.render&&cr.always_on_expected===false){ab.className='banner warn';ab.textContent='Trading kjører, men Render FREE kan sovne når dashboardet lukkes. Oppgrader Compute til 0.5c-512mb for ekte 24/7.'}else if(live){ab.className='banner good';ab.textContent=running?'Motor ONLINE – trading er STARTET.':'Motor ONLINE – trading er STOPPET/PAUSET.'}else{ab.className='banner warn';ab.textContent='Motoren starter eller restarter…'}renderSymbols(s.symbols||{});renderOrders(s.orders||[]);const lo=(s.orders||[])[0]?.id||'-';document.getElementById('lastOrderId').textContent=lo}catch(e){document.getElementById('liveDot').className='dot bad';document.getElementById('liveText').textContent='OFFLINE'}}
 async function refreshLoop(){await refresh(false);setTimeout(refreshLoop,dashboardRefreshMs)}refreshLoop();
 </script></body></html>\n"""
 
