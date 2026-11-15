@@ -54,6 +54,16 @@ def register_onedrive_oauth(app, backup):
                          "ONEDRIVE_CLIENT_SECRET = ny Client Secret (lagres kun i Render Environment)",
                          "Redirect URI for Web = " + REDIRECT_URI,
                          "API: Microsoft Graph delegated Files.ReadWrite, User.Read og offline_access"])
+        if backup.connected():
+            status = backup.status()
+            return page(
+                "Microsoft-tilkoblingen er registrert. Siste verifiserte sikkerhetskopi: " +
+                str(status["last_success_utc"] or "ingen ennå") + ".",
+                ["Mappe: " + status["destination"],
+                 "Antall databaser i siste verifiserte kopi: " + str(status["files_verified"]),
+                 "Backupfeil (hvis noen): " + str(status["last_error"] or "ingen"),
+                 "Kun PAPER. Originale databaser og ordrebeskyttelse beholdes på Render."],
+            )
         state = secrets.token_urlsafe(32)
         nonce = secrets.token_urlsafe(32)
         verifier = secrets.token_urlsafe(64)
