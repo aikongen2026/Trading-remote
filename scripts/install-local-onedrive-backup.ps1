@@ -19,8 +19,8 @@ function Assert-Archive([string]$File, [string]$ExpectedSha) {
     }
     $zip = [System.IO.Compression.ZipFile]::OpenRead($File)
     try {
-        $allowed = @('learning_v3.sqlite','runtime_audit.sqlite','broker_history.sqlite')
-        if ($zip.Entries.Count -ne 4) { throw 'Backupen inneholder uventet antall filer.' }
+        $allowed = @('learning_v3.sqlite','runtime_audit.sqlite','broker_history.sqlite','alpaca_edge_v49.sqlite')
+        if ($zip.Entries.Count -ne 5) { throw 'Backupen inneholder uventet antall filer.' }
         $manifestEntry = $zip.GetEntry('manifest.json')
         if ($null -eq $manifestEntry) { throw 'Backupen mangler manifest.' }
         $manifestStream = $manifestEntry.Open()
@@ -30,7 +30,7 @@ function Assert-Archive([string]$File, [string]$ExpectedSha) {
             finally { $reader.Dispose() }
         } finally { $manifestStream.Dispose() }
         if ($manifest.format -ne 'tradingbot-paper-evidence-v1' -or
-            $manifest.mode -ne 'PAPER' -or $manifest.files.Count -ne 3) {
+            $manifest.mode -ne 'PAPER' -or $manifest.files.Count -ne 4) {
             throw 'Backupmanifestet er ugyldig eller ikke PAPER.'
         }
         $sha = [System.Security.Cryptography.SHA256]::Create()
@@ -41,7 +41,7 @@ function Assert-Archive([string]$File, [string]$ExpectedSha) {
                 if ($null -eq $e -or $entry.Count -ne 1) {
                     throw 'Databasen mangler i backupen.'
                 }
-                if ($e.Length -gt 67108864 -or $e.Length -ne [long]$entry[0].bytes) {
+                if ($e.Length -gt 805306368 -or $e.Length -ne [long]$entry[0].bytes) {
                     throw 'Databasefilen har ugyldig stoerrelse.'
                 }
                 $stream = $e.Open()
@@ -81,7 +81,7 @@ function Invoke-Backup {
     }
     $temp = Join-Path $target ('.trbot-' + [Guid]::NewGuid().ToString('N') + '.partial')
     try {
-        $resp = Invoke-WebRequest -Uri "$baseUrl/api/evidence-backup" -WebSession $http -OutFile $temp -PassThru -UseBasicParsing -TimeoutSec 180
+        $resp = Invoke-WebRequest -Uri "$baseUrl/api/evidence-backup" -WebSession $http -OutFile $temp -PassThru -UseBasicParsing -TimeoutSec 900
         if ($resp.StatusCode -ne 200) { throw 'Render svarte ikke med en gyldig sikkerhetskopi.' }
         $hashHeader = [string]$resp.Headers['X-TradingBot-SHA256']
         Assert-Archive -File $temp -ExpectedSha $hashHeader

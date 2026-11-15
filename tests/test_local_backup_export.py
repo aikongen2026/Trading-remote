@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from local_backup_export import make_archive, EvidenceArchiveError
-from state_storage import FILES
+from local_backup_export import EVIDENCE_FILES
 
 
 class EvidenceBackupTests(unittest.TestCase):
@@ -26,7 +26,7 @@ class EvidenceBackupTests(unittest.TestCase):
         self.temp.cleanup()
 
     def create_data(self):
-        for name in FILES:
+        for name in EVIDENCE_FILES:
             with sqlite3.connect(self.root / name) as db:
                 db.execute("create table evidence (n integer)")
                 db.execute("insert into evidence values (123)")
@@ -41,9 +41,9 @@ class EvidenceBackupTests(unittest.TestCase):
             body = stream.read()
             self.assertEqual(hashlib.sha256(body).hexdigest(), sha)
             with zipfile.ZipFile(io.BytesIO(body)) as archive:
-                self.assertEqual(set(archive.namelist()), set(FILES) | {"manifest.json"})
+                self.assertEqual(set(archive.namelist()), set(EVIDENCE_FILES) | {"manifest.json"})
                 self.assertEqual(manifest["mode"], "PAPER")
-                self.assertEqual(len(manifest["files"]), len(FILES))
+                self.assertEqual(len(manifest["files"]), len(EVIDENCE_FILES))
                 for item in manifest["files"]:
                     data = archive.read(item["name"])
                     self.assertEqual(hashlib.sha256(data).hexdigest(), item["sha256"])
@@ -58,7 +58,7 @@ class EvidenceBackupTests(unittest.TestCase):
             self.assertNotIn(b"do not archive me", body)
         finally:
             stream.close()
-        for name in FILES:
+        for name in EVIDENCE_FILES:
             self.assertTrue((self.root / name).exists())
 
     def test_refuses_live_trading(self):
