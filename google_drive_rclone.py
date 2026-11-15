@@ -97,10 +97,10 @@ class GoogleDriveBackup:
         if len(json.dumps(token)) > 16000:
             raise GoogleDriveBackupError("TOKEN_TOO_LARGE")
         with self.lock:
-            config_content = ("[tradingbot_google]\\n"
-                              "type = drive\\n"
-                              "scope = drive.file\\n"
-                              "token = " + json.dumps(token, separators=(",", ":")) + "\\n")
+            config_content = ("[tradingbot_google]\n"
+                              "type = drive\n"
+                              "scope = drive.file\n"
+                              "token = " + json.dumps(token, separators=(",", ":")) + "\n")
             # Create/verify an app-owned folder. The drive.file scope cannot
             # inspect the user's unrelated files or folders.
             with tempfile.TemporaryDirectory(prefix="trbot-rclone-") as folder:
