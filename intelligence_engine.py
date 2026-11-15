@@ -246,6 +246,7 @@ class SignalJournal:
         self._enabled = True
         self.last_error = ""
         self.last_write = None
+        self._last_outcome_check: Dict[str, float] = {}
         try:
             Path(path).parent.mkdir(parents=True, exist_ok=True)
             with closing(sqlite3.connect(path, timeout=3)) as db, db:
@@ -346,37 +347,53 @@ class SignalJournal:
         except Exception as exc:
             self.last_error = type(exc).__name__ + ': ' + str(exc)
 
-    def update_outcomes(self, symbol: str, current_price: float) -> None:
+    def update_outcomes(self, symbol: str, current_price: float, bars=None) -> None:
+        """Settle 5/15/60-minute outcomes using timestamped completed bars.
+
+        The old narrow 3-minute polling window silently lost many labels.
+        A missing historical candle remains NULL; it is never guessed using
+        the current price long after a signal was generated.
+        """
         if not self._enabled or current_price <= 0:
             return
+        from outcome_marking import bar_marks, horizon_price
         now = utc_now()
+        now_sec = now.timestamp()
+        key = str(symbol).upper()
+        if now_sec - self._last_outcome_check.get(key, 0) < 30:
+            return
+        self._last_outcome_check[key] = now_sec
+        marks = bar_marks(bars, now)
+        if not marks:
+            return
+        since = (now - timedelta(hours=3)).isoformat()
         try:
             with self._lock, closing(sqlite3.connect(self.path, timeout=3)) as db, db:
                 rows = db.execute(
-                    "SELECT id, ts, price, outcome_5m, outcome_15m, outcome_60m FROM decisions WHERE symbol=? AND price>0 ORDER BY id DESC LIMIT 250",
-                    (symbol,),
+                    """SELECT id, ts, price, outcome_5m, outcome_15m, outcome_60m
+                       FROM decisions WHERE symbol=? AND ts>=? AND price>0
+                         AND (outcome_5m IS NULL OR outcome_15m IS NULL OR outcome_60m IS NULL)
+                       ORDER BY id DESC LIMIT 1200""",
+                    (key, since),
                 ).fetchall()
                 for rid, ts, entry, o5, o15, o60 in rows:
-                    d = parse_ts(ts)
-                    if d is None or not entry:
-                        continue
-                    age = (now - d).total_seconds()
-                    updates = []
-                    vals = []
-                    ret = pct(float(entry), current_price)
-                    if o5 is None and 300 <= age <= 480:
-                        updates.append("outcome_5m=?"); vals.append(ret)
-                    if o15 is None and 900 <= age <= 1080:
-                        updates.append("outcome_15m=?"); vals.append(ret)
-                    if o60 is None and 3600 <= age <= 3780:
-                        updates.append("outcome_60m=?"); vals.append(ret)
+                    updates, params = [], []
+                    for minutes, column, old in ((5, "outcome_5m", o5),
+                                                 (15, "outcome_15m", o15),
+                                                 (60, "outcome_60m", o60)):
+                        if old is not None:
+                            continue
+                        close = horizon_price(ts, minutes, marks)
+                        if close is None:
+                            continue
+                        updates.append(column + "=?")
+                        params.append(pct(float(entry), close))
                     if updates:
-                        vals.append(rid)
-                        db.execute(f"UPDATE decisions SET {','.join(updates)} WHERE id=?", vals)
+                        db.execute(f"UPDATE decisions SET {','.join(updates)} WHERE id=?",
+                                   [*params, rid])
                 db.commit()
         except Exception:
             pass
-
 
 class IntelligenceEngine:
     def __init__(self, api: Any, cfg: Any, state_dir: str, stock_symbols: Iterable[str], crypto_symbols: Iterable[str]) -> None:
@@ -1537,8 +1554,8 @@ class IntelligenceEngine:
             "reason": reason,
         }
 
-    def update_learning_outcomes(self, symbol: str, price: Any) -> None:
-        self.journal.update_outcomes(symbol, safe_float(price, 0.0))
+    def update_learning_outcomes(self, symbol: str, price: Any, bars=None) -> None:
+        self.journal.update_outcomes(symbol, safe_float(price, 0.0), bars=bars)
 
     def record_decision(self, symbol: str, market: str, price: Any, signal: int, action: str, intelligence: Dict[str, Any], force: bool = False) -> None:
         # Normal trade-event calls remain sparse. V4.4 can force periodic candidate
