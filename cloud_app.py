@@ -57,6 +57,10 @@ from saxo_sim import SaxoSimEngine
 from saxo_oauth import register_saxo_oauth
 from onedrive_backup import OneDriveBackup
 from onedrive_oauth import register_onedrive_oauth
+from onedrive_rclone import RcloneBackup
+from onedrive_backup import OneDriveBackupError
+from flask import jsonify, request
+import hmac
 
 # Install monkey-patches before the engine constructs AlpacaRest / IntelligenceEngine.
 # The sidecar itself starts only after persistent state has been restored.
@@ -66,6 +70,45 @@ SAXO_SIM = SaxoSimEngine(trading_bot.STATE_DIR)
 register_saxo_oauth(app, SAXO_SIM)
 ONEDRIVE_BACKUP = OneDriveBackup(trading_bot.STATE_DIR)
 register_onedrive_oauth(app, ONEDRIVE_BACKUP)
+RCLONE_BACKUP = RcloneBackup(trading_bot.STATE_DIR)
+_PAIR_FAILURES = []
+_PAIR_LOCK = threading.Lock()
+
+@app.post("/api/onedrive/pair")
+def onedrive_pair():
+    # Strictly isolated setup endpoint; no browser session, no trading actions.
+    # The HTTPS request must carry the existing dashboard password in a header.
+    if not request.is_secure:
+        return jsonify({"ok": False, "error": "https_required"}), 403
+    now = time.monotonic()
+    with _PAIR_LOCK:
+        _PAIR_FAILURES[:] = [x for x in _PAIR_FAILURES if now - x < 3600]
+        if len(_PAIR_FAILURES) >= 10:
+            return jsonify({"ok": False, "error": "rate_limited"}), 429
+        supplied = request.headers.get("X-Setup-Password", "")
+        expected = os.getenv("DASHBOARD_PASSWORD", "").strip()
+        if not expected or not hmac.compare_digest(supplied, expected):
+            _PAIR_FAILURES.append(now)
+            return jsonify({"ok": False, "error": "unauthorized"}), 401
+    if not env_bool("ALPACA_PAPER", True):
+        return jsonify({"ok": False, "error": "paper_only_required"}), 403
+    if not request.is_json:
+        return jsonify({"ok": False, "error": "json_required"}), 400
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict) or not isinstance(payload.get("token"), dict):
+        return jsonify({"ok": False, "error": "invalid_request"}), 400
+    try:
+        RCLONE_BACKUP.connect(payload["token"])
+    except Exception as exc:
+        # Avoid echoing OAuth secrets, Graph payloads or tokens to the client.
+        return jsonify({"ok": False, "error": str(exc) if isinstance(exc, OneDriveBackupError)
+                        else "setup_failed"}), 400
+    return jsonify({"ok": True, "status": RCLONE_BACKUP.status()})
+
+@app.get("/api/onedrive/status")
+def onedrive_status():
+    return jsonify(RCLONE_BACKUP.status())
+
 
 ENGINE_THREAD: threading.Thread | None = None
 ENGINE_LOCK = threading.Lock()
@@ -162,6 +205,7 @@ def main() -> None:
     start_engine()
     backup.start()
     ONEDRIVE_BACKUP.start()
+    RCLONE_BACKUP.start()
     threading.Thread(target=watchdog, name="engine-watchdog", daemon=True).start()
     host = "0.0.0.0"
     port = int(os.getenv("PORT", "10000"))
