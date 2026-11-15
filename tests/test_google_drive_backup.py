@@ -34,20 +34,27 @@ class GoogleDriveBackupTests(unittest.TestCase):
             calls.append(args)
             return b""
         self.backup._run = fake_run
-        self.backup.connect(self.token())
+        self.backup.connect(self.token(), "1234567890-test.apps.googleusercontent.com", "GOCSPX-test-secret")
         self.assertTrue(self.backup.connected())
         self.assertEqual(self.backup.path.stat().st_mode & 0o777, 0o600)
         self.assertIn("scope = drive.file", self.backup.path.read_text())
+        self.assertIn("client_id = 1234567890-test.apps.googleusercontent.com", self.backup.path.read_text())
+        self.assertIn("client_secret = GOCSPX-test-secret", self.backup.path.read_text())
         self.assertIn("type = drive", self.backup.path.read_text())
         self.assertEqual(calls[:2], [
             ["mkdir", "tradingbot_google:Trading Bot/Lagring"],
             ["lsf", "tradingbot_google:Trading Bot/Lagring"]])
 
+    def test_rejects_shared_retiring_google_client(self):
+        with self.assertRaises(GoogleDriveBackupError):
+            self.backup.connect(self.token())
+        self.assertFalse(self.backup.path.exists())
+
     def test_connection_failure_does_not_store_token(self):
         self.backup._run = lambda *a, **kw: (_ for _ in ()).throw(
             GoogleDriveBackupError("GOOGLE_DRIVE_COMMAND_FAILED"))
         with self.assertRaises(GoogleDriveBackupError):
-            self.backup.connect(self.token())
+            self.backup.connect(self.token(), "1234567890-test.apps.googleusercontent.com", "GOCSPX-test-secret")
         self.assertFalse(self.backup.path.exists())
 
     def test_verified_upload_leaves_originals_intact(self):
