@@ -214,6 +214,7 @@ class ShadowLab:
         self.path = os.path.join(state_dir, "learning_v3.sqlite")
         self.lock = threading.Lock()
         self.last_log: Dict[Tuple[str, str], float] = {}
+        self._last_outcome_check: Dict[str, float] = {}
         Path(state_dir).mkdir(parents=True, exist_ok=True)
         self._ensure()
 
@@ -273,26 +274,40 @@ class ShadowLab:
         except Exception:
             pass
 
-    def update_outcomes(self, symbol: str, current_price: float) -> None:
+    def update_outcomes(self, symbol: str, current_price: float, bars=None) -> None:
+        """Timestamp-accurate 15-minute shadow labels from completed bars.
+
+        Retry recent unlabeled observations when missing bars arrive; do not
+        substitute a much-later quote and accidentally fabricate outcomes.
+        """
         if current_price <= 0:
             return
+        from outcome_marking import bar_marks, horizon_price
         now = datetime.now(UTC)
+        now_sec = now.timestamp()
+        key = norm(symbol)
+        if now_sec - self._last_outcome_check.get(key, 0) < 30:
+            return
+        self._last_outcome_check[key] = now_sec
+        marks = bar_marks(bars, now)
+        if not marks:
+            return
+        since = datetime.fromtimestamp(now_sec - 3 * 3600, UTC).isoformat()
         try:
             with self.lock, closing(sqlite3.connect(self.path, timeout=3)) as db, db:
                 rows = db.execute(
-                    "SELECT id,ts,price FROM shadow_signals WHERE symbol=? AND outcome_15m IS NULL ORDER BY id DESC LIMIT 250",
-                    (norm(symbol),),
+                    """SELECT id,ts,price FROM shadow_signals
+                       WHERE symbol=? AND ts>=? AND outcome_15m IS NULL
+                       ORDER BY id DESC LIMIT 1200""",
+                    (key, since),
                 ).fetchall()
                 for rid, ts, entry in rows:
-                    try:
-                        d = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
-                        if d.tzinfo is None:
-                            d = d.replace(tzinfo=UTC)
-                        age = (now - d.astimezone(UTC)).total_seconds()
-                    except Exception:
+                    if sf(entry) <= 0:
                         continue
-                    if 900 <= age <= 1080 and sf(entry) > 0:
-                        db.execute("UPDATE shadow_signals SET outcome_15m=? WHERE id=?", (pct(sf(entry), current_price), rid))
+                    close = horizon_price(ts, 15, marks)
+                    if close is not None:
+                        db.execute("UPDATE shadow_signals SET outcome_15m=? WHERE id=?",
+                                   (pct(sf(entry), close), rid))
                 db.commit()
         except Exception:
             pass
