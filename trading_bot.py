@@ -2313,7 +2313,7 @@ def main() -> None:
                         # Never label a historical signal using an old/stale quote.
                         try:
                             if st.get("price") and not quote_is_stale_early:
-                                shadow_lab.update_outcomes(sym, float(st["price"]))
+                                shadow_lab.update_outcomes(sym, float(st["price"]), bars=bars_cache.get_bars(sym))
                         except Exception as e:
                             st["debug"]["shadow_outcome_error"] = str(e)
 
@@ -2759,7 +2759,7 @@ def main() -> None:
                         st["error"] = str(e)
 
                     if intelligence_enabled and st.get("price") and not quote_is_stale_early:
-                        intelligence.update_learning_outcomes(sym, st.get("price"))
+                        intelligence.update_learning_outcomes(sym, st.get("price"), bars=bars_cache.get_bars(sym))
                     symbols_state[sym] = st
 
             # CRYPTO 24/7 -----------------------------------------------------
@@ -2960,7 +2960,7 @@ def main() -> None:
                                             bot_version=runtime_bot_version(),
                                             min_interval_sec=shadow_log_interval_sec,
                                         )
-                                    shadow_lab.update_outcomes(sym, float(st["price"]))
+                                    shadow_lab.update_outcomes(sym, float(st["price"]), bars=crypto_bars_cache.get_bars(sym))
                                 except Exception as e:
                                     st["debug"]["shadow_crypto_error"] = str(e)
                             k = trade_plan_key("CRYPTO", sym)
@@ -3158,7 +3158,7 @@ def main() -> None:
                         except Exception as e:
                             st["error"] = str(e)
                         if intelligence_enabled and st.get("price") and not quote_is_stale:
-                            intelligence.update_learning_outcomes(sym, st.get("price"))
+                            intelligence.update_learning_outcomes(sym, st.get("price"), bars=crypto_bars_cache.get_bars(sym))
                         symbols_state[sym] = st
 
             # V4.4 training journal: persist actionable WAIT/BUY/EXIT states periodically,
