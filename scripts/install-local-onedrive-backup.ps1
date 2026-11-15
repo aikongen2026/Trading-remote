@@ -54,7 +54,7 @@ function Assert-Archive([string]$File, [string]$ExpectedSha) {
             }
         } finally { $sha.Dispose() }
         foreach ($e in $zip.Entries) {
-            if ($e.FullName -notin @('manifest.json') + $allowed) {
+            if ($e.FullName -notin (@('manifest.json') + $allowed)) {
                 throw 'Backupen inneholder uventede filer.'
             }
         }
