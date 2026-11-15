@@ -29,6 +29,7 @@ class BackupJobManager:
         self.lock = threading.RLock()
         self.job = None
         self.sent_reserved_bytes = 0
+        self.reservation_month = None
 
     @staticmethod
     def _paper():
@@ -38,6 +39,10 @@ class BackupJobManager:
         if not self._paper():
             return 0, "paper_only_required"
         root = Path(state_dir)
+        current_month = datetime.now(timezone.utc).strftime("%Y-%m")
+        if self.reservation_month != current_month:
+            self.sent_reserved_bytes = 0
+            self.reservation_month = current_month
         try:
             raw_size = 0
             for name in EVIDENCE_FILES:
@@ -101,6 +106,14 @@ class BackupJobManager:
                 if not self.job or self.job["id"] != job_id:
                     handle.close()
                     return
+                # Prevent the download if compressed bytes themselves exceed
+                # the same conservative remaining-budget calculation.
+                _size, budget_error = self._size_and_budget(state_dir)
+                if budget_error:
+                    handle.close()
+                    self.job.update(phase="error", error=budget_error,
+                                    completed_monotonic=time.monotonic())
+                    return
                 self.job.update(
                     phase="ready", handle=handle, zip_sha256=digest,
                     size_bytes=length, completed_monotonic=time.monotonic(),
@@ -159,7 +172,7 @@ class BackupJobManager:
             _raw_size, error = self._size_and_budget(state_dir)
             if error:
                 return None, error
-            self.sent_reserved_bytes += _raw_size
+            self.sent_reserved_bytes += max(_raw_size, int(job["size_bytes"]))
             job["phase"] = "downloading"
             handle = job["handle"]
             handle.seek(0)
