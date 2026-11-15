@@ -206,7 +206,7 @@ class SaxoOAuthFlowTests(unittest.TestCase):
         _, state = self.start()
         self.engine.session.post.return_value.json = lambda: {'access_token': 'fake-new'}
         response = self.callback(state)
-        self.assertTrue(response.location.endswith('outcome=failed'))
+        self.assertTrue(response.location.endswith('outcome=token_response_invalid'))
         self.assertFalse(self.engine.token_state_path.exists())
 
     def test_disabled_engine_does_not_exchange(self):
@@ -219,7 +219,7 @@ class SaxoOAuthFlowTests(unittest.TestCase):
         _, state = self.start()
         with patch.object(self.engine, '_persist_tokens', side_effect=OSError('disk full')):
             response = self.callback(state)
-        self.assertTrue(response.location.endswith('outcome=failed'))
+        self.assertTrue(response.location.endswith('outcome=storage_failed'))
         self.assertTrue(self.engine._tokens_dirty)
         self.assertFalse(self.engine._status()['token_persisted'])
         self.engine.session.request.assert_not_called()

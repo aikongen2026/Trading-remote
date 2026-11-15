@@ -426,7 +426,9 @@ class IntelligenceEngine:
         self.official_interval = 4.0 * 60.0
         self.regime_interval = 60.0
         self.factor_interval = 30.0 * 60.0
-        self.sec_interval = 180.0
+        # SEC often rate-limits cloud IPs; do not hammer it every three minutes.
+        self.sec_interval = 30.0 * 60.0
+        self.external_retry_after: Dict[str, float] = {}
         self.persist_interval = 30.0
         self.calendar_interval = 6.0 * 3600.0
         self.decay_half_life_min = 45.0
@@ -455,6 +457,7 @@ class IntelligenceEngine:
         self.journal = SignalJournal(os.path.join(state_dir, "learning_v3.sqlite"))
         self.sec_company_names: Dict[str, str] = {}
         self.sec_map_loaded_ts = 0.0
+        self._news_reconnect_after = 0.0
         self._news_thread: Optional[threading.Thread] = None
         self._stock_thread: Optional[threading.Thread] = None
         self._crypto_thread: Optional[threading.Thread] = None
@@ -695,6 +698,9 @@ class IntelligenceEngine:
     def _news_stream_loop(self) -> None:
         url = "wss://stream.data.alpaca.markets/v1beta1/news"
         while not self._stop.is_set():
+            if time.time() < self._news_reconnect_after:
+                self._stop.wait(min(60, self._news_reconnect_after - time.time()))
+                continue
             ws = None
             try:
                 headers = [
@@ -736,7 +742,12 @@ class IntelligenceEngine:
                         )
                 self.source_health["alpaca_news"] = "RECONNECTING"
             except Exception as exc:
-                self.source_health["alpaca_news"] = f"STREAM_ERR:{type(exc).__name__}"
+                # Unavailable news entitlements are not fixed by reconnecting every 10s.
+                if isinstance(exc, PermissionError):
+                    self._news_reconnect_after = time.time() + 3600
+                    self.source_health["alpaca_news"] = "REST_FALLBACK:STREAM_AUTH_DENIED"
+                else:
+                    self.source_health["alpaca_news"] = f"STREAM_ERR:{type(exc).__name__}"
             finally:
                 try:
                     if ws:
@@ -992,9 +1003,11 @@ class IntelligenceEngine:
                     str(a.get("seendate") or a.get("date") or utc_now().isoformat()), None,
                 ):
                     n += 1
+            self.external_retry_after.pop("gdelt", None)
             self.source_health["gdelt"] = f"OK:{n}"
         except Exception as exc:
-            self.source_health["gdelt"] = f"ERR:{type(exc).__name__}"
+            self.external_retry_after["gdelt"] = time.time() + 30 * 60
+            self.source_health["gdelt"] = f"DEGRADED:{type(exc).__name__}:BACKOFF_30M"
 
     # -------------------- official sources --------------------
     def _poll_rss(self, source: str, url: str) -> int:
@@ -1149,9 +1162,11 @@ class IntelligenceEngine:
                         continue
                     if self.ingest("sec", f"Form {form.upper()} - {title}", summary, link, syms, updated):
                         count += 1
+            self.external_retry_after.pop("sec", None)
             self.source_health["sec"] = f"OK:{count}"
         except Exception as exc:
-            self.source_health["sec"] = f"ERR:{type(exc).__name__}"
+            self.external_retry_after["sec"] = time.time() + 60 * 60
+            self.source_health["sec"] = f"DEGRADED:{type(exc).__name__}:BACKOFF_60M"
 
     # -------------------- cross-market regime --------------------
     def _market_regime(self) -> None:
@@ -1293,10 +1308,10 @@ class IntelligenceEngine:
         now = time.time()
         due = (
             now - self.last_run["alpaca_rest"] >= self.rest_news_interval
-            or now - self.last_run["gdelt"] >= self.gdelt_interval
+            or (now - self.last_run["gdelt"] >= self.gdelt_interval and now >= self.external_retry_after.get("gdelt", 0.0))
             or now - self.last_run["official"] >= self.official_interval
             or now - self.last_run["calendar"] >= self.calendar_interval
-            or now - self.last_run["sec"] >= self.sec_interval
+            or (now - self.last_run["sec"] >= self.sec_interval and now >= self.external_retry_after.get("sec", 0.0))
             or now - self.last_run["regime"] >= self.regime_interval
             or now - self.last_run["factors"] >= self.factor_interval
             or now - self.last_run["persist"] >= self.persist_interval
@@ -1315,7 +1330,7 @@ class IntelligenceEngine:
         if now - self.last_run["alpaca_rest"] >= self.rest_news_interval:
             self.last_run["alpaca_rest"] = now
             self._poll_alpaca_news()
-        if now - self.last_run["gdelt"] >= self.gdelt_interval:
+        if now - self.last_run["gdelt"] >= self.gdelt_interval and now >= self.external_retry_after.get("gdelt", 0.0):
             self.last_run["gdelt"] = now
             self._poll_gdelt()
         if now - self.last_run["official"] >= self.official_interval:
@@ -1325,7 +1340,7 @@ class IntelligenceEngine:
             self.last_run["calendar"] = now
             self._poll_bls_calendar()
         self._update_event_blackout()
-        if now - self.last_run["sec"] >= self.sec_interval:
+        if now - self.last_run["sec"] >= self.sec_interval and now >= self.external_retry_after.get("sec", 0.0):
             self.last_run["sec"] = now
             self._poll_sec()
         if now - self.last_run["regime"] >= self.regime_interval:

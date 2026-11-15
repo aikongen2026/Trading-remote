@@ -309,8 +309,27 @@ class ShadowLab:
                     vals = [sf(r[0]) for r in rows]
                     n = len(vals)
                     wins = sum(1 for x in vals if x > 0)
+                    # An unlabeled observation is not a loss or a win. Make
+                    # outcome coverage visible instead of implying learning
+                    # is healthy when most observations were never evaluated.
+                    total = db.execute(
+                        "SELECT COUNT(*) FROM shadow_signals WHERE model=?", (model,)
+                    ).fetchone()[0]
+                    labelled_total = db.execute(
+                        "SELECT COUNT(*) FROM shadow_signals WHERE model=? AND outcome_15m IS NOT NULL",
+                        (model,),
+                    ).fetchone()[0]
+                    pending = db.execute(
+                        "SELECT COUNT(*) FROM shadow_signals WHERE model=? AND outcome_15m IS NULL AND ts>=?",
+                        (model, datetime.fromtimestamp(time.time()-1080, UTC).isoformat()),
+                    ).fetchone()[0]
+                    expired = max(0, total - labelled_total - pending)
                     out["models"][model] = {
                         "samples": n,
+                        "total_observations": total,
+                        "pending_15m": pending,
+                        "expired_unlabelled": expired,
+                        "outcome_coverage_pct": round(100.0 * labelled_total / max(1, total - pending), 1),
                         "win_rate_pct": round(wins / n * 100.0, 1) if n else None,
                         "avg_return_bps": round(sum(vals) / n * 10000.0, 2) if n else None,
                     }

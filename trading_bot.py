@@ -58,6 +58,43 @@ TRADE_PLANS_PATH = os.path.join(STATE_DIR, "trade_plans_v4.json")
 BOT_INSTANCE_PORT = int(os.getenv("TRADINGBOT_INSTANCE_PORT", "5051"))
 
 
+def merge_fresh_stream_quotes(rest_quotes: Dict[str, Dict[str, Any]], symbols: List[str],
+                              intelligence: Any, stale_sec: int = 20) -> Dict[str, Dict[str, Any]]:
+    """Prefer a genuinely newer live stream quote over delayed REST snapshots.
+
+    Never synthesize timestamps, and never treat an absent/stale quote as fresh.
+    This only improves data selection; existing entry freshness/risk gates remain.
+    """
+    merged = dict(rest_quotes)
+    now = utc_now()
+    try:
+        lock = getattr(intelligence, "lock", None)
+        if lock is None:
+            return merged
+        with lock:
+            live = {symbol_key(sym): dict(intelligence.live_quotes.get(symbol_key(sym)) or {})
+                    for sym in symbols}
+    except Exception:
+        return merged
+    for sym in symbols:
+        stream = live.get(symbol_key(sym)) or {}
+        try:
+            bid, ask = float(stream.get("bid") or 0), float(stream.get("ask") or 0)
+            stamp = parse_any_ts(stream.get("ts"))
+            if not (bid > 0 and ask >= bid and stamp):
+                continue
+            age = (now - stamp).total_seconds()
+            if not (-2 <= age <= max(1, int(stale_sec))):
+                continue
+            previous = merged.get(sym) or merged.get(sym.upper()) or {}
+            prev_dt = parse_any_ts(previous.get("t") or previous.get("timestamp"))
+            if prev_dt is None or stamp > prev_dt:
+                merged[sym.upper()] = {"bp": bid, "ap": ask, "t": stamp.isoformat()}
+        except (ValueError, TypeError, OverflowError):
+            continue
+    return merged
+
+
 def runtime_bot_version() -> str:
     with open(os.path.join(HERE, "VERSION.txt"), encoding="utf-8-sig") as version_file:
         return version_file.read().strip()
@@ -2008,6 +2045,10 @@ def main() -> None:
                             except Exception as e:
                                 notes.append(f"Quotes feilet: {e}")
 
+                quotes_by_sym = merge_fresh_stream_quotes(
+                    quotes_by_sym, stocks, intelligence, quote_stale_sec,
+                )
+
                 # Bars: backfill history only for cold symbols. Once warm, use the
                 # lightweight latest-bar endpoint instead of repeatedly downloading days of history.
                 refresh_syms = [s for s in stocks if bars_cache.needs_refresh(s, refresh_bars_every_sec)]
@@ -2257,7 +2298,7 @@ def main() -> None:
                             except Exception as e:
                                 st["debug"]["profit_engine_error"] = str(e)
 
-                        if champion_challenger_enabled and st.get("price") and profit_plan is not None:
+                        if champion_challenger_enabled and st.get("price") and not quote_is_stale_early and profit_plan is not None:
                             try:
                                 _pd = profit_plan.to_dict()
                                 _sector = intel.get("sector_confirmation") or {"ok": True, "score": 0.0}
@@ -2269,11 +2310,12 @@ def main() -> None:
                                 )
                             except Exception as e:
                                 st["debug"]["shadow_error"] = str(e)
+                        # Never label a historical signal using an old/stale quote.
                         try:
-                            if st.get("price"):
+                            if st.get("price") and not quote_is_stale_early:
                                 shadow_lab.update_outcomes(sym, float(st["price"]))
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            st["debug"]["shadow_outcome_error"] = str(e)
 
                         if not armed or paused or kill:
                             st["action"] = "HOLD"
@@ -2716,7 +2758,7 @@ def main() -> None:
                     except Exception as e:
                         st["error"] = str(e)
 
-                    if intelligence_enabled and st.get("price"):
+                    if intelligence_enabled and st.get("price") and not quote_is_stale_early:
                         intelligence.update_learning_outcomes(sym, st.get("price"))
                     symbols_state[sym] = st
 
@@ -2732,6 +2774,9 @@ def main() -> None:
                         except Exception as e:
                             notes.append(f"Crypto quotes feilet: {e}")
 
+                    crypto_quotes = merge_fresh_stream_quotes(
+                        crypto_quotes, crypto_symbols, intelligence, max(quote_stale_sec, 30),
+                    )
                     refresh_crypto = [s for s in crypto_symbols if crypto_bars_cache.needs_refresh(s, refresh_bars_every_sec)]
                     cold_crypto = [s for s in refresh_crypto if not crypto_bars_cache.get_closes(s)]
                     warm_crypto = [s for s in refresh_crypto if crypto_bars_cache.get_closes(s)]
@@ -2901,6 +2946,23 @@ def main() -> None:
                             quote_dt = parse_any_ts(st.get("quote_time")) if st.get("quote_time") else None
                             quote_is_stale = not (quote_dt and st.get("bid") and st.get("ask") and quote_age_ok
                                                   and -2 <= (utc_now()-quote_dt).total_seconds() <= max(quote_stale_sec, 30))
+                            # Keep crypto shadow training evidence, including rejected entries.
+                            # Challengers only write observations; they cannot submit orders.
+                            if champion_challenger_enabled and st.get("price") and not quote_is_stale:
+                                try:
+                                    if profit_plan is not None:
+                                        shadow_lab.observe(
+                                            symbol=sym, price=float(st["price"]), signal=int(sig or 0),
+                                            intel=intel, plan=profit_plan.to_dict(),
+                                            router_mode=str(crypto_strategy_mode),
+                                            sector={"ok": True, "score": 0.0},
+                                            champion_allowed=bool(intel.get("entry_allowed")) and bool(profit_plan.allowed),
+                                            bot_version=runtime_bot_version(),
+                                            min_interval_sec=shadow_log_interval_sec,
+                                        )
+                                    shadow_lab.update_outcomes(sym, float(st["price"]))
+                                except Exception as e:
+                                    st["debug"]["shadow_crypto_error"] = str(e)
                             k = trade_plan_key("CRYPTO", sym)
                             saved_plan = trade_plans.get(k) if isinstance(trade_plans.get(k), dict) else {}
 
@@ -3095,7 +3157,7 @@ def main() -> None:
                                 st["action"] = "QUOTE_STALE" if quote_is_stale and st["pos_qty"] <= 0 else "HOLD"
                         except Exception as e:
                             st["error"] = str(e)
-                        if intelligence_enabled and st.get("price"):
+                        if intelligence_enabled and st.get("price") and not quote_is_stale:
                             intelligence.update_learning_outcomes(sym, st.get("price"))
                         symbols_state[sym] = st
 

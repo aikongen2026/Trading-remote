@@ -351,7 +351,11 @@ class LiveNews:
             self.health.update(state="DISABLED", last_error="websocket-client missing")
             return
         url = "wss://stream.data.alpaca.markets/v1beta1/news"
+        denied_until = 0.0
         while not self.stop.is_set():
+            if time.time() < denied_until:
+                self.stop.wait(min(60.0, denied_until - time.time()))
+                continue
             ws = None
             try:
                 self.health["state"] = "CONNECTING"
@@ -381,7 +385,11 @@ class LiveNews:
                                 pass
                         raise
             except Exception as exc:
-                self.health.update(state="RECONNECTING", last_error=type(exc).__name__)
+                if isinstance(exc, PermissionError):
+                    denied_until = time.time() + 3600
+                    self.health.update(state="REST_FALLBACK", last_error="NEWS_PERMISSION_DENIED")
+                else:
+                    self.health.update(state="RECONNECTING", last_error=type(exc).__name__)
             finally:
                 try:
                     if ws is not None:
