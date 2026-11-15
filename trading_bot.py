@@ -58,6 +58,43 @@ TRADE_PLANS_PATH = os.path.join(STATE_DIR, "trade_plans_v4.json")
 BOT_INSTANCE_PORT = int(os.getenv("TRADINGBOT_INSTANCE_PORT", "5051"))
 
 
+def merge_fresh_stream_quotes(rest_quotes: Dict[str, Dict[str, Any]], symbols: List[str],
+                              intelligence: Any, stale_sec: int = 20) -> Dict[str, Dict[str, Any]]:
+    """Prefer a genuinely newer live stream quote over delayed REST snapshots.
+
+    Never synthesize timestamps, and never treat an absent/stale quote as fresh.
+    This only improves data selection; existing entry freshness/risk gates remain.
+    """
+    merged = dict(rest_quotes)
+    now = utc_now()
+    try:
+        lock = getattr(intelligence, "lock", None)
+        if lock is None:
+            return merged
+        with lock:
+            live = {symbol_key(sym): dict(intelligence.live_quotes.get(symbol_key(sym)) or {})
+                    for sym in symbols}
+    except Exception:
+        return merged
+    for sym in symbols:
+        stream = live.get(symbol_key(sym)) or {}
+        try:
+            bid, ask = float(stream.get("bid") or 0), float(stream.get("ask") or 0)
+            stamp = parse_any_ts(stream.get("ts"))
+            if not (bid > 0 and ask >= bid and stamp):
+                continue
+            age = (now - stamp).total_seconds()
+            if not (-2 <= age <= max(1, int(stale_sec))):
+                continue
+            previous = merged.get(sym) or merged.get(sym.upper()) or {}
+            prev_dt = parse_any_ts(previous.get("t") or previous.get("timestamp"))
+            if prev_dt is None or stamp > prev_dt:
+                merged[sym.upper()] = {"bp": bid, "ap": ask, "t": stamp.isoformat()}
+        except (ValueError, TypeError, OverflowError):
+            continue
+    return merged
+
+
 def runtime_bot_version() -> str:
     with open(os.path.join(HERE, "VERSION.txt"), encoding="utf-8-sig") as version_file:
         return version_file.read().strip()
@@ -2008,6 +2045,10 @@ def main() -> None:
                             except Exception as e:
                                 notes.append(f"Quotes feilet: {e}")
 
+                quotes_by_sym = merge_fresh_stream_quotes(
+                    quotes_by_sym, stocks, intelligence, quote_stale_sec,
+                )
+
                 # Bars: backfill history only for cold symbols. Once warm, use the
                 # lightweight latest-bar endpoint instead of repeatedly downloading days of history.
                 refresh_syms = [s for s in stocks if bars_cache.needs_refresh(s, refresh_bars_every_sec)]
@@ -2733,6 +2774,9 @@ def main() -> None:
                         except Exception as e:
                             notes.append(f"Crypto quotes feilet: {e}")
 
+                    crypto_quotes = merge_fresh_stream_quotes(
+                        crypto_quotes, crypto_symbols, intelligence, max(quote_stale_sec, 30),
+                    )
                     refresh_crypto = [s for s in crypto_symbols if crypto_bars_cache.needs_refresh(s, refresh_bars_every_sec)]
                     cold_crypto = [s for s in refresh_crypto if not crypto_bars_cache.get_closes(s)]
                     warm_crypto = [s for s in refresh_crypto if crypto_bars_cache.get_closes(s)]
