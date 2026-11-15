@@ -59,6 +59,7 @@ app.config.update(
 _LOGIN_ATTEMPTS: Dict[str, list[float]] = {}
 _PROFIT_TRADES_CACHE: Dict[int, tuple[float, Dict[str, Any]]] = {}
 _EXPORT_LOCK = threading.Lock()
+_EVIDENCE_EXPORT_LOCK = threading.Lock()
 
 
 def utc_now_iso() -> str:
@@ -2713,6 +2714,47 @@ def api_export():
         return jsonify({"ok": False, "error": "export_failed", "detail": str(exc)[:500]}), 500
     finally:
         _EXPORT_LOCK.release()
+
+
+@app.get("/api/evidence-backup")
+def api_evidence_backup():
+    """Password/session authenticated complete evidence download (PAPER only).
+
+    Does not change trading state or write to persistent /var/data. All copies
+    are made using SQLite's online backup API in ephemeral temporary storage.
+    """
+    if (os.getenv("ALPACA_PAPER", "true").strip().lower() not in {"true", "1", "yes", "on"}):
+        return jsonify({"ok": False, "error": "paper_only_required"}), 403
+    if not _EVIDENCE_EXPORT_LOCK.acquire(blocking=False):
+        return jsonify({"ok": False, "error": "backup_in_progress"}), 429
+    handle = None
+    try:
+        from local_backup_export import make_archive, EvidenceArchiveError
+        handle, digest, manifest = make_archive(STATE_DIR)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        result = send_file(handle, as_attachment=True,
+                           download_name=f"TradingBot_EVIDENCE_{stamp}UTC.zip",
+                           mimetype="application/zip", conditional=False,
+                           max_age=0)
+        result.headers["Cache-Control"] = "no-store, private, max-age=0"
+        result.headers["X-Content-Type-Options"] = "nosniff"
+        result.headers["X-TradingBot-SHA256"] = digest
+        result.headers["X-TradingBot-Evidence-Format"] = manifest["format"]
+        handle.seek(0, os.SEEK_END)
+        result.content_length = handle.tell()
+        handle.seek(0)
+        result.call_on_close(handle.close)
+        return result
+    except EvidenceArchiveError:
+        if handle:
+            handle.close()
+        return jsonify({"ok": False, "error": "evidence_unavailable"}), 503
+    except Exception:
+        if handle:
+            handle.close()
+        return jsonify({"ok": False, "error": "evidence_export_failed"}), 500
+    finally:
+        _EVIDENCE_EXPORT_LOCK.release()
 
 
 @app.post("/api/test_buy")
