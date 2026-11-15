@@ -64,6 +64,11 @@ def register_saxo_oauth(app, engine):
 
     @app.get("/saxo/oauth")
     def saxo_oauth_setup():
+        # Already connected and refreshable: never start an unnecessary new login.
+        if (engine.account_connected and engine.configured and engine.refresh_token
+                and engine.token_state_path.is_file() and not engine.auth_error
+                and not engine.token_store_error):
+            return page("Saxo SIM er allerede tilkoblet. Token fornyes automatisk.")
         missing = config_missing()
         if not engine.enabled:
             missing.insert(0, "SAXO_SIM_ENABLED=true")
