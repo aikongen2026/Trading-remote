@@ -83,11 +83,19 @@ class GoogleDriveBackup:
             raise GoogleDriveBackupError("GOOGLE_DRIVE_COMMAND_FAILED")
         return result.stdout
 
-    def connect(self, token):
+    def connect(self, token, client_id=None, client_secret=None):
         if os.getenv("ALPACA_PAPER", "true").lower() not in ("1", "true", "yes", "on"):
             raise GoogleDriveBackupError("PAPER_ONLY_REQUIRED")
         if not self.binary:
             raise GoogleDriveBackupError("RCLONE_NOT_INSTALLED")
+        # The rclone shared Google client is retired; a personal OAuth desktop
+        # client is required for continued token refresh in unattended mode.
+        if (not isinstance(client_id, str) or
+                not client_id.endswith(".apps.googleusercontent.com") or
+                len(client_id) > 256 or
+                not isinstance(client_secret, str) or
+                len(client_secret) > 256 or not client_secret):
+            raise GoogleDriveBackupError("GOOGLE_OAUTH_CLIENT_REQUIRED")
         if not isinstance(token, dict):
             raise GoogleDriveBackupError("TOKEN_INVALID")
         for field in ("access_token", "refresh_token", "expiry"):
@@ -100,6 +108,8 @@ class GoogleDriveBackup:
             config_content = ("[tradingbot_google]\n"
                               "type = drive\n"
                               "scope = drive.file\n"
+                              "client_id = " + client_id + "\n"
+                              "client_secret = " + client_secret + "\n"
                               "token = " + json.dumps(token, separators=(",", ":")) + "\n")
             # Create/verify an app-owned folder. The drive.file scope cannot
             # inspect the user's unrelated files or folders.
