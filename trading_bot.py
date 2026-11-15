@@ -96,8 +96,8 @@ def merge_fresh_stream_quotes(rest_quotes: Dict[str, Dict[str, Any]], symbols: L
 
 
 def runtime_bot_version() -> str:
-    with open(os.path.join(HERE, "VERSION.txt"), encoding="utf-8-sig") as version_file:
-        return version_file.read().strip()
+    from app_version import runtime_version
+    return runtime_version()
 
 
 def acquire_single_instance_socket() -> socket.socket:
