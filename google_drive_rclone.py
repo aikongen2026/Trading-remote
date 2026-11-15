@@ -92,7 +92,7 @@ class GoogleDriveBackup:
         # The rclone shared Google client is retired; a personal OAuth desktop
         # client is required for continued token refresh in unattended mode.
         if (not isinstance(client_id, str) or
-                not re.fullmatch(r"[A-Za-z0-9._-]{1,230}\\.apps\\.googleusercontent\\.com", client_id) or
+                not re.fullmatch(r"[A-Za-z0-9._-]{1,230}\.apps\.googleusercontent\.com", client_id) or
                 not isinstance(client_secret, str) or
                 not re.fullmatch(r"[A-Za-z0-9._-]{5,256}", client_secret)):
             raise GoogleDriveBackupError("GOOGLE_OAUTH_CLIENT_REQUIRED")
