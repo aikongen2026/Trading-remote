@@ -2717,45 +2717,53 @@ def api_export():
         _EXPORT_LOCK.release()
 
 
+@app.post("/api/evidence-backup/start")
+def api_evidence_backup_start():
+    """Schedule an authenticated one-shot PAPER backup when bandwidth is safe."""
+    from evidence_backup_jobs import BACKUP_JOBS
+    status, http_code = BACKUP_JOBS.start(STATE_DIR)
+    response = jsonify(status)
+    response.status_code = http_code
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.get("/api/evidence-backup/status")
+def api_evidence_backup_status():
+    from evidence_backup_jobs import BACKUP_JOBS
+    response = jsonify(BACKUP_JOBS.status())
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 @app.get("/api/evidence-backup")
 def api_evidence_backup():
-    """Password/session authenticated complete evidence download (PAPER only).
-
-    Does not change trading state or write to persistent /var/data. All copies
-    are made using SQLite's online backup API in ephemeral temporary storage.
-    """
-    if (os.getenv("ALPACA_PAPER", "true").strip().lower() not in {"true", "1", "yes", "on"}):
-        return jsonify({"ok": False, "error": "paper_only_required"}), 403
-    if not _EVIDENCE_EXPORT_LOCK.acquire(blocking=False):
-        return jsonify({"ok": False, "error": "backup_in_progress"}), 429
-    handle = None
+    """Download only a ready, verified export. Never build during HTTP GET."""
+    from evidence_backup_jobs import BACKUP_JOBS
+    job, error = BACKUP_JOBS.begin_download(STATE_DIR)
+    if error:
+        code = 403 if error == "paper_only_required" else 429 if "budget" in error else 503
+        response = jsonify({"ok": False, "error": error})
+        response.status_code = code
+        response.headers["Cache-Control"] = "no-store"
+        return response
     try:
-        from local_backup_export import make_archive, EvidenceArchiveError
-        handle, digest, manifest = make_archive(STATE_DIR)
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        result = send_file(handle, as_attachment=True,
-                           download_name=f"TradingBot_EVIDENCE_{stamp}UTC.zip",
-                           mimetype="application/zip", conditional=False,
-                           max_age=0)
+        result = send_file(
+            job["handle"], as_attachment=True,
+            download_name=f"TradingBot_EVIDENCE_{stamp}UTC.zip",
+            mimetype="application/zip", conditional=False, max_age=0,
+        )
         result.headers["Cache-Control"] = "no-store, private, max-age=0"
         result.headers["X-Content-Type-Options"] = "nosniff"
-        result.headers["X-TradingBot-SHA256"] = digest
-        result.headers["X-TradingBot-Evidence-Format"] = manifest["format"]
-        handle.seek(0, os.SEEK_END)
-        result.content_length = handle.tell()
-        handle.seek(0)
-        result.call_on_close(handle.close)
+        result.headers["X-TradingBot-SHA256"] = job["zip_sha256"]
+        result.headers["X-TradingBot-Evidence-Format"] = "tradingbot-paper-evidence-v1"
+        result.content_length = job["size_bytes"]
+        result.call_on_close(lambda: BACKUP_JOBS.finish_download(job["job_id"]))
         return result
-    except EvidenceArchiveError:
-        if handle:
-            handle.close()
-        return jsonify({"ok": False, "error": "evidence_unavailable"}), 503
     except Exception:
-        if handle:
-            handle.close()
-        return jsonify({"ok": False, "error": "evidence_export_failed"}), 500
-    finally:
-        _EVIDENCE_EXPORT_LOCK.release()
+        BACKUP_JOBS.finish_download(job["job_id"])
+        return jsonify({"ok": False, "error": "backup_download_failed"}), 500
 
 
 @app.post("/api/test_buy")
