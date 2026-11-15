@@ -69,7 +69,7 @@ function Invoke-Backup {
         throw 'Ingen lokalt lagret Trading Bot-innlogging. Kjoer installasjonskommandoen.'
     }
     New-Item -Path $target -ItemType Directory -Force | Out-Null
-    $secure = Get-Content -LiteralPath $credFile -Raw | ConvertTo-SecureString
+    $secure = (Get-Content -LiteralPath $credFile -Raw).Trim() | ConvertTo-SecureString
     $ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
     try { $password = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr) }
     finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) }
