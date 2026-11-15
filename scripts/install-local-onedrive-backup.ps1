@@ -117,17 +117,16 @@ if ($RunBackup) {
 if (-not (Test-Path -LiteralPath $oneDriveRoot -PathType Container)) {
     throw 'OneDrive - Straye AS er ikke synkronisert paa PC-en. Ingen endringer gjort.'
 }
-Write-Host 'Trading Bot - automatisk sikkerhetskopi til eksisterende OneDrive' -ForegroundColor Cyan
+# Explicit cost protection: disable an existing hourly task before downloading.
+$task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+if ($task) {
+    Disable-ScheduledTask -TaskName $taskName | Out-Null
+    Write-Host 'Tidligere timejobb er deaktivert for aa unngaa trafikkutgifter.' -ForegroundColor Yellow
+}
+Write-Host 'Trading Bot - sikkerhetskopi til eksisterende OneDrive' -ForegroundColor Cyan
 Write-Host ('Lagringsmappe: ' + $target)
 $secure = Read-Host 'Skriv Trading Bot-passordet EN gang (ikke OneDrive-passord)' -AsSecureString
 $secure | ConvertFrom-SecureString | Set-Content -LiteralPath $credFile -Encoding UTF8
 Write-Host 'Tester full sikkerhetskopiering mot Render ...'
 $null = Invoke-Backup
-# Explicit cost protection: no automatic repeat download is created.
-# Existing schedules from older versions should be disabled manually as well.
-$task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-if ($task) {
-    Disable-ScheduledTask -TaskName $taskName | Out-Null
-    Write-Host 'Tidligere timejobb er deaktivert for aa forhindre uventede Render-trafikkutgifter.' -ForegroundColor Yellow
-}
 Write-Host 'FERDIG: Verifisert sikkerhetskopi lagret i OneDrive. Ingen automatisk timejobb er aktiv.' -ForegroundColor Green
