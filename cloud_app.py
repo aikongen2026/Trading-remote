@@ -131,7 +131,9 @@ def google_drive_pair():
     if not isinstance(payload, dict) or not isinstance(payload.get("token"), dict):
         return jsonify({"ok": False, "error": "invalid_request"}), 400
     try:
-        GOOGLE_BACKUP.connect(payload["token"])
+        GOOGLE_BACKUP.connect(
+            payload["token"], payload.get("client_id"), payload.get("client_secret")
+        )
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc) if isinstance(exc, GoogleDriveBackupError)
                         else "setup_failed"}), 400
