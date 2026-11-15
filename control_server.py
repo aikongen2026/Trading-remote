@@ -123,7 +123,11 @@ def require_login():
 LOGIN_HTML = r"""
 <!doctype html><html lang="no"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#0b1220"><title>Trading Bot – innlogging</title>
+<meta name="theme-color" content="#0b1220">
+<link rel="manifest" href="/manifest.webmanifest"/>
+<link rel="icon" type="image/png" sizes="192x192" href="/static/icon-192.png"/>
+<link rel="apple-touch-icon" href="/static/icon-192.png"/>
+<title>Trading Bot – innlogging</title>
 <style>
 *{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#08101d;color:#eef4ff;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;padding:20px}
 .card{width:min(420px,100%);background:#0f1a33;border:1px solid #24365a;border-radius:18px;padding:24px;box-shadow:0 20px 50px #0008}h1{font-size:24px;margin:0 0 8px}.muted{color:#9fb0cf;font-size:14px;margin-bottom:20px}input{width:100%;padding:14px 15px;border-radius:12px;border:1px solid #30466f;background:#081327;color:#fff;font-size:16px;margin:8px 0 14px}button{width:100%;padding:14px;border:0;border-radius:12px;background:#0f6f4e;color:#fff;font-weight:800;font-size:16px}.err{background:#4a1420;border:1px solid #8c2f49;padding:10px;border-radius:10px;margin-bottom:12px}.logo{width:54px;height:54px;border-radius:14px;background:#12264c;display:grid;place-items:center;font-size:28px;margin-bottom:14px}
@@ -780,7 +784,7 @@ LOGIN_HTML = r"""
       .topbar{min-height:0}
       .topbar:after{display:none}
     }
-</style></head><body><div class="card"><div class="logo">📈</div><h1>Trading Bot</h1><div class="muted">Sikker fjernkontroll for PC og telefon.</div>{% if error %}<div class="err">{{error}}</div>{% endif %}<form method="post"><input name="password" type="password" autocomplete="current-password" placeholder="Dashboard-passord" autofocus required><button type="submit">LOGG INN</button></form></div></body></html>
+</style></head><body><div class="card"><div class="logo">📈</div><h1>Trading Bot</h1><div class="muted">Sikker fjernkontroll for PC og telefon.</div><div class="muted" style="margin-top:-12px">Samsung: Åpne nettsiden i <b>Chrome</b> og velg <b>⋮ → Legg til på startskjermen → Installer</b>. I Samsung Internet: <b>☰ → Legg til side på → Startskjerm</b>.</div>{% if error %}<div class="err">{{error}}</div>{% endif %}<form method="post"><input name="password" type="password" autocomplete="current-password" placeholder="Dashboard-passord" autofocus required><button type="submit">LOGG INN</button></form></div></body></html>
 """
 
 
@@ -2003,7 +2007,7 @@ HTML = r"""\n<!doctype html>
       .sub{font-size:11px !important}
       .revBadge{font-size:10px !important;padding:4px 8px !important}
 
-      #installHelp{display:none !important}
+      #installHelp{display:none}
 
       .kpiStrip{
         height:100% !important;
@@ -2503,9 +2507,11 @@ HTML = r"""\n<!doctype html>
 </div>
 <script>
 let installPrompt=null, alertsEnabled=false,symbolFilter='all';
-window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();installPrompt=e;document.getElementById('installBtn').style.display='inline-block'});
+window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();installPrompt=e;document.getElementById('installBtn').style.display='inline-block';});
+window.addEventListener('appinstalled',()=>{installPrompt=null;const b=document.getElementById('installBtn');if(b)b.style.display='none';const h=document.getElementById('installHelp');if(h){h.style.display='block';h.textContent='Trading Bot er installert på denne enheten.';}});
+if(window.matchMedia('(display-mode: standalone)').matches){const b=document.getElementById('installBtn');if(b)b.style.display='none';}
 if('serviceWorker' in navigator){window.addEventListener('load',()=>navigator.serviceWorker.register('/service-worker.js').catch(()=>{}));}
-async function installApp(){const h=document.getElementById('installHelp');if(installPrompt){installPrompt.prompt();await installPrompt.userChoice;installPrompt=null;h.style.display='none';return;}const ios=/iphone|ipad|ipod/i.test(navigator.userAgent);h.style.display='block';h.innerHTML=ios?'På iPhone/iPad: trykk <b>Del</b> → <b>Legg til på Hjem-skjerm</b>.':'I nettlesermenyen: velg <b>Installer app</b> eller <b>Legg til på startskjermen</b>.';}
+async function installApp(){const h=document.getElementById('installHelp');if(installPrompt){installPrompt.prompt();const c=await installPrompt.userChoice;installPrompt=null;if(c.outcome==='accepted'){h.style.display='none';return;}}const ua=navigator.userAgent;const ios=/iphone|ipad|ipod/i.test(ua);const samsung=/SamsungBrowser/i.test(ua);const android=/Android/i.test(ua);h.style.setProperty('display','block','important');h.innerHTML=ios?'iPhone/iPad: Trykk <b>Del</b> → <b>Legg til på Hjem-skjerm</b>.':samsung?'Samsung Internet: Trykk <b>☰ Meny</b> → <b>Legg til side på</b> → <b>Startskjerm</b>. Hvis valget mangler, åpne siden i Chrome.':android?'Chrome på Samsung: Trykk <b>⋮</b> → <b>Legg til på startskjermen</b> → <b>Installer</b> (eller <b>Opprett snarvei</b>). Åpne siden direkte i Chrome, ikke inne i ChatGPT/Facebook.':'Bruk nettlesermenyen → <b>Installer app</b> eller <b>Legg til på startskjermen</b>.';}
 function pill(v){let c='neutral';if(v===true||String(v)==='true')c='good';if(v===false||String(v)==='false')c='bad';return `<span class="pill ${c}">${v}</span>`}
 function fmt(x){if(x===null||x===undefined||x==='')return '-';const n=Number(x);if(Number.isNaN(n))return String(x);const a=Math.abs(n);return a>=100?n.toFixed(2):a>=1?n.toFixed(4):n.toFixed(6)}
 function money(x){if(x===null||x===undefined||x==='')return '-';const n=Number(x);if(Number.isNaN(n))return '-';return `${n>0?'+':n<0?'-':''}$${Math.abs(n).toFixed(2)}`}

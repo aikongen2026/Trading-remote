@@ -1,10 +1,17 @@
-const CACHE='tradingbot-shell-v2';
+// Installation assets only. Never cache account pages or trading controls.
+const CACHE='tradingbot-shell-v3';
 const SHELL=['/manifest.webmanifest','/static/icon-192.png','/static/icon-512.png'];
-self.addEventListener('install',e=>{e.waitUntil(caches.open(CACHE).then(c=>c.addAll(SHELL)).then(()=>self.skipWaiting()))});
-self.addEventListener('activate',e=>{e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k.startsWith('tradingbot-shell-')&&k!==CACHE).map(k=>caches.delete(k)))).then(()=>self.clients.claim()))});
-self.addEventListener('fetch',e=>{
-  const u=new URL(e.request.url);
-  if(u.origin!==location.origin || u.pathname.startsWith('/api/') || u.pathname.startsWith('/saxo/') || ['/login','/logout','/healthz'].includes(u.pathname) || e.request.method!=='GET') return;
-  e.respondWith(fetch(e.request).then(r=>{if(r.ok&&!/no-store/i.test(r.headers.get('Cache-Control')||'')){const c=r.clone();caches.open(CACHE).then(x=>x.put(e.request,c));}return r}).catch(()=>caches.match(e.request).then(r=>r||caches.match('/manifest.webmanifest'))));
+self.addEventListener('install',event=>{
+  event.waitUntil(caches.open(CACHE).then(cache=>cache.addAll(SHELL)).then(()=>self.skipWaiting()));
 });
-
+self.addEventListener('activate',event=>{
+  event.waitUntil(caches.keys().then(keys=>Promise.all(
+    keys.filter(key=>key.startsWith('tradingbot-shell-')&&key!==CACHE).map(key=>caches.delete(key))
+  )).then(()=>self.clients.claim()));
+});
+self.addEventListener('fetch',event=>{
+  const req=event.request;
+  const url=new URL(req.url);
+  if(req.method!=='GET'||url.origin!==location.origin||!SHELL.includes(url.pathname))return;
+  event.respondWith(fetch(req).catch(()=>caches.match(req)));
+});
