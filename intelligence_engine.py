@@ -859,42 +859,92 @@ class IntelligenceEngine:
                 except Exception: pass
             self._stop.wait(10)
 
+    @staticmethod
+    def _crypto_stream_messages(raw: Any) -> List[Dict[str, Any]]:
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", errors="replace")
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
+        if isinstance(parsed, dict):
+            return [parsed]
+        return [item for item in parsed if isinstance(item, dict)] if isinstance(parsed, list) else []
+
+    def _crypto_stream_handshake(self, ws: Any, symbols: List[str]) -> int:
+        """Alpaca crypto v1beta3 requires JSON auth, then subscription ACK.
+
+        HTTP-style API key headers alone do not authenticate this WebSocket.
+        Do not report CONNECTED until the quote subscription is acknowledged.
+        """
+        ws.settimeout(20)
+        connected = False
+        for _ in range(3):
+            messages = self._crypto_stream_messages(ws.recv())
+            if any(m.get("T") == "error" for m in messages):
+                raise PermissionError("Crypto stream connection refused")
+            if any(m.get("T") == "success" and m.get("msg") == "connected" for m in messages):
+                connected = True
+                break
+        if not connected:
+            raise ConnectionError("Crypto stream connection not acknowledged")
+
+        ws.send(json.dumps({"action": "auth", "key": self.cfg.key, "secret": self.cfg.secret}))
+        authenticated = False
+        for _ in range(3):
+            messages = self._crypto_stream_messages(ws.recv())
+            if any(m.get("T") == "error" for m in messages):
+                raise PermissionError("Crypto stream authentication rejected")
+            if any(m.get("T") == "success" and m.get("msg") == "authenticated" for m in messages):
+                authenticated = True
+                break
+        if not authenticated:
+            raise PermissionError("Crypto stream authentication not acknowledged")
+
+        ws.send(json.dumps({"action": "subscribe", "quotes": symbols, "bars": symbols}))
+        expected = set(symbols)
+        for _ in range(3):
+            messages = self._crypto_stream_messages(ws.recv())
+            if any(m.get("T") == "error" for m in messages):
+                raise RuntimeError("Crypto stream subscription rejected")
+            for message in messages:
+                if message.get("T") == "subscription":
+                    accepted = expected.intersection(str(s).upper() for s in message.get("quotes", []))
+                    if not accepted:
+                        raise RuntimeError("Crypto stream has no active quote subscription")
+                    return len(accepted)
+        raise RuntimeError("Crypto stream subscription not acknowledged")
+
     def _crypto_stream_loop(self) -> None:
         url = "wss://stream.data.alpaca.markets/v1beta3/crypto/us"
         symbols = list(self.crypto_symbols)
         while not self._stop.is_set():
             ws = None
             try:
-                headers = [f"APCA-API-KEY-ID: {self.cfg.key}", f"APCA-API-SECRET-KEY: {self.cfg.secret}"]
-                ws = websocket.create_connection(url, header=headers, timeout=20)
-                for _ in range(3):
-                    try:
-                        raw = ws.recv()
-                        msgs = json.loads(raw) if raw else []
-                        if isinstance(msgs, list) and any(isinstance(x, dict) and x.get("msg") == "authenticated" for x in msgs):
-                            break
-                    except Exception:
-                        break
-                ws.send(json.dumps({"action":"subscribe","quotes":symbols,"bars":symbols}))
+                ws = websocket.create_connection(url, timeout=20)
+                accepted_count = self._crypto_stream_handshake(ws, symbols)
+                self.source_health["crypto_stream"] = f"CONNECTED:{accepted_count}/{len(symbols)}"
                 ws.settimeout(30)
-                self.source_health["crypto_stream"] = f"CONNECTED:{len(symbols)}"
                 while not self._stop.is_set():
                     try:
                         raw = ws.recv()
-                    except Exception:
-                        break
-                    if not raw: continue
-                    msgs = json.loads(raw)
-                    if isinstance(msgs, dict): msgs = [msgs]
-                    for m in msgs if isinstance(msgs, list) else []:
-                        if isinstance(m, dict): self._consume_stream_message(m, "CRYPTO")
+                    except websocket.WebSocketTimeoutException:
+                        # Quiet symbols should not force repeated authentications.
+                        ws.ping()
+                        continue
+                    if not raw:
+                        continue
+                    for message in self._crypto_stream_messages(raw):
+                        if message.get("T") == "error":
+                            raise RuntimeError("Crypto stream server rejected request")
+                        self._consume_stream_message(message, "CRYPTO")
                 self.source_health["crypto_stream"] = "RECONNECTING"
             except Exception as exc:
+                # Only error categories: never put credentials or server responses in status.
                 self.source_health["crypto_stream"] = f"ERR:{type(exc).__name__}"
             finally:
                 try:
-                    if ws: ws.close()
-                except Exception: pass
+                    if ws:
+                        ws.close()
+                except Exception:
+                    pass
             self._stop.wait(10)
 
     def microstructure_score(self, symbol: str, market: str) -> Tuple[float, Dict[str, Any]]:
