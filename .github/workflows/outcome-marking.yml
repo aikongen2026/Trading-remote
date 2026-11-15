@@ -1,0 +1,22 @@
+name: Research learning outcome regression
+on:
+  pull_request:
+    paths:
+      - 'outcome_marking.py'
+      - 'intelligence_engine.py'
+      - 'adaptive_edge.py'
+      - 'trading_bot.py'
+      - 'tests/test_outcome_marking.py'
+      - '.github/workflows/outcome-marking.yml'
+jobs:
+  timestamped-outcomes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install existing project requirements
+        run: pip install -r requirements.txt
+      - name: Unit tests for timestamped outcomes
+        run: python -m unittest discover -s tests -p 'test_outcome_marking.py' -v
