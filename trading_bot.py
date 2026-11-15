@@ -2257,7 +2257,7 @@ def main() -> None:
                             except Exception as e:
                                 st["debug"]["profit_engine_error"] = str(e)
 
-                        if champion_challenger_enabled and st.get("price") and profit_plan is not None:
+                        if champion_challenger_enabled and st.get("price") and not quote_is_stale_early and profit_plan is not None:
                             try:
                                 _pd = profit_plan.to_dict()
                                 _sector = intel.get("sector_confirmation") or {"ok": True, "score": 0.0}
