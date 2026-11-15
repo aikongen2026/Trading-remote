@@ -1,0 +1,25 @@
+name: Local OneDrive PowerShell and archive compatibility
+on:
+  pull_request:
+    paths:
+      - 'scripts/install-local-onedrive-backup.ps1'
+      - 'local_backup_export.py'
+      - 'tests/test_local_backup_export.py'
+      - '.github/workflows/local-onedrive-backup.yml'
+jobs:
+  windows-powershell:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: PowerShell 5.1 script syntax and self-test
+        shell: powershell
+        run: .\scripts\install-local-onedrive-backup.ps1 -SelfTest
+  linux-archive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Archive integrity tests
+        run: python -m unittest discover -s tests -p 'test_local_backup_export.py' -v
