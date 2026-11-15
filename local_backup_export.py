@@ -1,6 +1,6 @@
 """Create complete, consistent PAPER evidence archives without using Render's disk.
 
-Only the three evidence SQLite databases are included. Secrets, OAuth tokens,
+Only the allowlisted evidence SQLite databases are included. Secrets, OAuth tokens,
 control.json, order intents and trade plans are deliberately excluded. Temporary
 snapshots and the archive reside on the container's ephemeral /tmp, not /var/data.
 """
@@ -17,9 +17,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
-from state_storage import FILES, MAX_BYTES
+from state_storage import FILES
 
-MAX_ARCHIVE_BYTES = len(FILES) * MAX_BYTES + 8 * 1024 * 1024
+# Live evidence journals can grow far beyond the 64MB limit used for
+# small PostgreSQL checkpoints. Keep this export independent of that limit.
+EVIDENCE_FILES = tuple(dict.fromkeys((*FILES, "alpaca_edge_v49.sqlite")))
+MAX_EVIDENCE_DB_BYTES = 768 * 1024 * 1024
+MAX_ARCHIVE_BYTES = len(EVIDENCE_FILES) * MAX_EVIDENCE_DB_BYTES + 8 * 1024 * 1024
 
 
 class EvidenceArchiveError(Exception):
@@ -47,11 +51,11 @@ def make_archive(state_dir):
             with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED,
                                  compresslevel=2, allowZip64=True) as output:
                 items = []
-                for name in FILES:
+                for name in EVIDENCE_FILES:
                     source = root / name
                     if not source.is_file():
                         raise EvidenceArchiveError("EVIDENCE_DATABASE_MISSING")
-                    if source.stat().st_size > MAX_BYTES:
+                    if source.stat().st_size > MAX_EVIDENCE_DB_BYTES:
                         raise EvidenceArchiveError("EVIDENCE_DATABASE_TOO_LARGE")
                     temp_db = Path(work) / name
                     try:
@@ -59,7 +63,7 @@ def make_archive(state_dir):
                         with closing(sqlite3.connect(uri, uri=True, timeout=15)) as src:
                             with closing(sqlite3.connect(str(temp_db), timeout=15)) as dst:
                                 src.backup(dst, pages=512, sleep=0.01)
-                        if temp_db.stat().st_size > MAX_BYTES:
+                        if temp_db.stat().st_size > MAX_EVIDENCE_DB_BYTES:
                             raise EvidenceArchiveError("EVIDENCE_DATABASE_TOO_LARGE")
                         with closing(sqlite3.connect(str(temp_db), timeout=15)) as check:
                             integrity = check.execute("PRAGMA integrity_check").fetchone()
