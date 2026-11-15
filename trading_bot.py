@@ -2269,11 +2269,12 @@ def main() -> None:
                                 )
                             except Exception as e:
                                 st["debug"]["shadow_error"] = str(e)
+                        # Never label a historical signal using an old/stale quote.
                         try:
-                            if st.get("price"):
+                            if st.get("price") and not quote_is_stale_early:
                                 shadow_lab.update_outcomes(sym, float(st["price"]))
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            st["debug"]["shadow_outcome_error"] = str(e)
 
                         if not armed or paused or kill:
                             st["action"] = "HOLD"
@@ -2901,6 +2902,23 @@ def main() -> None:
                             quote_dt = parse_any_ts(st.get("quote_time")) if st.get("quote_time") else None
                             quote_is_stale = not (quote_dt and st.get("bid") and st.get("ask") and quote_age_ok
                                                   and -2 <= (utc_now()-quote_dt).total_seconds() <= max(quote_stale_sec, 30))
+                            # Keep crypto shadow training evidence, including rejected entries.
+                            # Challengers only write observations; they cannot submit orders.
+                            if champion_challenger_enabled and st.get("price") and not quote_is_stale:
+                                try:
+                                    if profit_plan is not None:
+                                        shadow_lab.observe(
+                                            symbol=sym, price=float(st["price"]), signal=int(sig or 0),
+                                            intel=intel, plan=profit_plan.to_dict(),
+                                            router_mode=str(crypto_strategy_mode),
+                                            sector={"ok": True, "score": 0.0},
+                                            champion_allowed=bool(intel.get("entry_allowed")) and bool(profit_plan.allowed),
+                                            bot_version=runtime_bot_version(),
+                                            min_interval_sec=shadow_log_interval_sec,
+                                        )
+                                    shadow_lab.update_outcomes(sym, float(st["price"]))
+                                except Exception as e:
+                                    st["debug"]["shadow_crypto_error"] = str(e)
                             k = trade_plan_key("CRYPTO", sym)
                             saved_plan = trade_plans.get(k) if isinstance(trade_plans.get(k), dict) else {}
 
