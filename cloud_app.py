@@ -73,6 +73,18 @@ ONEDRIVE_BACKUP = OneDriveBackup(trading_bot.STATE_DIR)
 register_onedrive_oauth(app, ONEDRIVE_BACKUP)
 RCLONE_BACKUP = RcloneBackup(trading_bot.STATE_DIR)
 GOOGLE_BACKUP = GoogleDriveBackup(trading_bot.STATE_DIR)
+# Safe startup diagnostics: log filenames/presence and sizes only, no
+# trading credentials or SQLite data. Needed to explain 503 evidence exports.
+try:
+    from state_storage import FILES as _EVIDENCE_FILES
+    _evidence_state = Path(trading_bot.STATE_DIR)
+    print("EVIDENCE_BACKUP_SOURCE_CHECK " + " ".join(
+        f"{name}={'missing' if not (_evidence_state / name).exists() else str((_evidence_state / name).stat().st_size)}"
+        for name in _EVIDENCE_FILES
+    ), flush=True)
+except (OSError, ValueError) as _backup_diag_err:
+    print("EVIDENCE_BACKUP_SOURCE_CHECK error=" + type(_backup_diag_err).__name__, flush=True)
+
 _PAIR_FAILURES = []
 _PAIR_LOCK = threading.Lock()
 
