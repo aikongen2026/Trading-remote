@@ -48,10 +48,7 @@ class SnapshotTests(unittest.TestCase):
             files = list((root / 'evidence_snapshots').glob('*.gz'))
             self.assertEqual(len(files), 1)
             self.assertTrue(files[0].name.startswith('learning_v3.sqlite'))
-            self.assertEqual(
-                __import__('gzip').decompress(files[0].read_bytes())[:16],
-                b'SQLite format 3\\x00',
-            )
+            self.assertTrue(__import__('gzip').decompress(files[0].read_bytes()).startswith(b'SQLite format 3'))
             self.assertFalse(any('control' in p.name for p in files))
 
 
