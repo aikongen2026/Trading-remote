@@ -2758,7 +2758,7 @@ def main() -> None:
                     except Exception as e:
                         st["error"] = str(e)
 
-                    if intelligence_enabled and st.get("price"):
+                    if intelligence_enabled and st.get("price") and not quote_is_stale_early:
                         intelligence.update_learning_outcomes(sym, st.get("price"))
                     symbols_state[sym] = st
 
@@ -3157,7 +3157,7 @@ def main() -> None:
                                 st["action"] = "QUOTE_STALE" if quote_is_stale and st["pos_qty"] <= 0 else "HOLD"
                         except Exception as e:
                             st["error"] = str(e)
-                        if intelligence_enabled and st.get("price"):
+                        if intelligence_enabled and st.get("price") and not quote_is_stale:
                             intelligence.update_learning_outcomes(sym, st.get("price"))
                         symbols_state[sym] = st
 
