@@ -23,8 +23,19 @@ Write-Host ''
 Write-Host 'Microsoft OneDrive-innlogging aapnes i nettleseren.'
 Write-Host 'Velg din jobb-OneDrive og godkjenn bare hvis du stoler paa rclone.'
 Write-Host ''
-$consoleText = (& $rcloneExe authorize onedrive 2>&1 | Out-String)
-if ($LASTEXITCODE -ne 0) {
+# Windows PowerShell 5.1 can turn harmless native stderr NOTICE lines
+# (e.g. "Config file not found - using defaults") into terminating errors
+# when ErrorActionPreference is Stop. Temporarily allow those messages
+# while still checking rclone's real process exit code.
+$originalErrorAction = $ErrorActionPreference
+try {
+    $ErrorActionPreference = 'Continue'
+    $consoleText = (& $rcloneExe authorize onedrive 2>&1 | Out-String)
+    $rcloneExitCode = $LASTEXITCODE
+} finally {
+    $ErrorActionPreference = $originalErrorAction
+}
+if ($rcloneExitCode -ne 0) {
     throw 'Microsoft-innloggingen ble ikke fullfoert. Kontroller om IT har sperret rclone.'
 }
 $matched = [regex]::Match($consoleText, '(?s)(\{"access_token".*?\})')
