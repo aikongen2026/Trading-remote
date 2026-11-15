@@ -79,8 +79,27 @@ function Invoke-Backup {
     } finally {
         Remove-Variable password -ErrorAction SilentlyContinue
     }
-    $temp = Join-Path $target ('.trbot-' + [Guid]::NewGuid().ToString('N') + '.partial')
+    # Keep unfinished downloads OUTSIDE the OneDrive sync directory.
+    $temp = Join-Path $env:TEMP ('.trbot-' + [Guid]::NewGuid().ToString('N') + '.partial')
     try {
+        # Build ZIP in the cloud first, then transfer it only once it is ready.
+        $started = Invoke-RestMethod -Uri "$baseUrl/api/evidence-backup/start" -Method POST -WebSession $http -ContentType 'application/json' -Body '{}' -TimeoutSec 40
+        $jobId = [string]$started.id
+        if (-not $jobId -or $started.phase -notin @('ready','building')) {
+            throw ('Backup ble ikke startet: ' + [string]$started.error)
+        }
+        $deadline = (Get-Date).AddMinutes(18)
+        $status = $started
+        while ($status.phase -eq 'building' -and (Get-Date) -lt $deadline) {
+            Start-Sleep -Seconds 6
+            $status = Invoke-RestMethod -Uri "$baseUrl/api/evidence-backup/status" -WebSession $http -TimeoutSec 30
+            if ([string]$status.id -ne $jobId) { throw 'Backupjobb-ID endret. Ingen data ble lastet ned.' }
+            Write-Host ('Backup forberedes i Render ... ' + $status.phase)
+        }
+        if ($status.phase -ne 'ready') {
+            throw ('Backup ikke klar: ' + [string]$status.error)
+        }
+        Write-Host ('ZIP er klar: ' + [math]::Round(([double]$status.size_bytes / 1MB), 1) + ' MiB. Laster ned én gang.')
         $resp = Invoke-WebRequest -Uri "$baseUrl/api/evidence-backup" -WebSession $http -OutFile $temp -PassThru -UseBasicParsing -TimeoutSec 900
         if ($resp.StatusCode -ne 200) { throw 'Render svarte ikke med en gyldig sikkerhetskopi.' }
         $hashHeader = [string]$resp.Headers['X-TradingBot-SHA256']
@@ -100,9 +119,6 @@ if ($SelfTest) {
     # Test installation script without changing PC, logging in or scheduling jobs.
     if ($baseUrl -ne 'https://trading-remote.onrender.com') { throw 'Ugyldig endpoint.' }
     if ($target -notlike '*OneDrive - Straye AS*Lagring') { throw 'Feil maalmappe.' }
-    $trialTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddHours(1) -RepetitionInterval (New-TimeSpan -Hours 1) -RepetitionDuration (New-TimeSpan -Days 3650)
-    $trialSettings = New-ScheduledTaskSettingsSet -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Minutes 20) -MultipleInstances IgnoreNew
-    if (-not $trialTrigger -or -not $trialSettings) { throw 'Windows Task Scheduler setup feilet.' }
     Write-Host 'Backup script self-test OK' -ForegroundColor Green
     return
 }
@@ -125,8 +141,12 @@ if ($task) {
 }
 Write-Host 'Trading Bot - sikkerhetskopi til eksisterende OneDrive' -ForegroundColor Cyan
 Write-Host ('Lagringsmappe: ' + $target)
-$secure = Read-Host 'Skriv Trading Bot-passordet EN gang (ikke OneDrive-passord)' -AsSecureString
-$secure | ConvertFrom-SecureString | Set-Content -LiteralPath $credFile -Encoding UTF8
+if (-not (Test-Path -LiteralPath $credFile -PathType Leaf)) {
+    $secure = Read-Host 'Skriv Trading Bot-passordet (ikke OneDrive-passord)' -AsSecureString
+    $secure | ConvertFrom-SecureString | Set-Content -LiteralPath $credFile -Encoding UTF8
+} else {
+    Write-Host 'Bruker eksisterende sikkert lagret Trading Bot-innlogging.' -ForegroundColor Green
+}
 Write-Host 'Tester full sikkerhetskopiering mot Render ...'
 $null = Invoke-Backup
 Write-Host 'FERDIG: Verifisert sikkerhetskopi lagret i OneDrive. Ingen automatisk timejobb er aktiv.' -ForegroundColor Green
