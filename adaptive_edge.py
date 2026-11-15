@@ -315,17 +315,21 @@ class ShadowLab:
                     total = db.execute(
                         "SELECT COUNT(*) FROM shadow_signals WHERE model=?", (model,)
                     ).fetchone()[0]
+                    labelled_total = db.execute(
+                        "SELECT COUNT(*) FROM shadow_signals WHERE model=? AND outcome_15m IS NOT NULL",
+                        (model,),
+                    ).fetchone()[0]
                     pending = db.execute(
                         "SELECT COUNT(*) FROM shadow_signals WHERE model=? AND outcome_15m IS NULL AND ts>=?",
                         (model, datetime.fromtimestamp(time.time()-1080, UTC).isoformat()),
                     ).fetchone()[0]
-                    expired = max(0, total - n - pending)
+                    expired = max(0, total - labelled_total - pending)
                     out["models"][model] = {
                         "samples": n,
                         "total_observations": total,
                         "pending_15m": pending,
                         "expired_unlabelled": expired,
-                        "outcome_coverage_pct": round(100.0 * n / max(1, total - pending), 1),
+                        "outcome_coverage_pct": round(100.0 * labelled_total / max(1, total - pending), 1),
                         "win_rate_pct": round(wins / n * 100.0, 1) if n else None,
                         "avg_return_bps": round(sum(vals) / n * 10000.0, 2) if n else None,
                     }
