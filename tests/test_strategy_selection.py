@@ -69,7 +69,7 @@ class StrategySelectionTests(unittest.TestCase):
         self.assertEqual(response.json["crypto_strategy_mode"], "cross")
 
     def test_dashboard_code_does_not_reset_strategy_or_undo_user_edits(self):
-        page = control_server.INDEX_HTML
+        page = control_server.HTML
         self.assertIn("strategyChoiceDirty=true", page)
         self.assertIn("s.selected_strategy_mode||s.strategy_mode", page)
         self.assertNotIn("strategy_mode:'scalp',fast_sma", page)
