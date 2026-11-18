@@ -137,10 +137,14 @@ def recover_stock_entry(symbol, position, orders, plan):
     return None, None
 
 
-def supervise_stocks(api, positions, orders, plans, guard, control, clock, audit, now=None):
+def supervise_stocks(api, positions, orders, plans, guard, control, clock, audit, now=None, *, open_orders=None):
     """Run before quotes/signals. A pause stops entries, while protection continues."""
     now = time.time() if now is None else now
-    result = {'actions': {}, 'unknown_positions': [], 'missing_protection': []}
+    result = {'actions': {}, 'unknown_positions': [], 'missing_protection': [], 'unmanaged_positions': {}, 'broker_data_fresh': True}
+    # Broker positions and open orders are already fetched by the trading loop.
+    # Use those read-only snapshots to report manual/unknown holdings. Never
+    # adopt an unknown position or submit a broker request on its behalf.
+    visible_orders = list(orders or []) + list(open_orders or [])
     regular = bool(clock.get('is_open'))
     close = epoch(clock.get('next_close'))
     flatten = regular and close is not None and 0 <= close-now <= 60*float(control.get('stock_flatten_before_close_min', 5))
@@ -155,6 +159,39 @@ def supervise_stocks(api, positions, orders, plans, guard, control, clock, audit
         started, entry = recover_stock_entry(symbol, pos, orders, plan)
         if started is None:
             result['unknown_positions'].append(symbol)
+            sells = open_sell_orders(visible_orders, symbol)
+            seen_order_ids = set()
+            stops = []
+            for o in sells:
+                kind = str(o.get('type') or o.get('order_type') or '').lower()
+                if kind not in {'stop', 'stop_limit', 'trailing_stop'}:
+                    continue
+                oid = str(o.get('id') or o.get('client_order_id') or '')
+                if oid and oid in seen_order_ids:
+                    continue
+                if oid:
+                    seen_order_ids.add(oid)
+                stops.append(o)
+            remaining = 0.0
+            for order in stops:
+                try:
+                    remaining += max(0.0, float(order.get('qty') or 0) - float(order.get('filled_qty') or 0))
+                except (ValueError, TypeError):
+                    pass
+            if not stops:
+                protection_status = 'NO_STOP_ORDER'
+            elif remaining + 1e-7 < qty:
+                protection_status = 'STOP_ORDER_PARTIAL'
+            else:
+                # Existence of a broker stop order does not establish that it
+                # will execute at its stop price or that the bot owns it.
+                protection_status = 'STOP_ORDER_PRESENT'
+            result['unmanaged_positions'][symbol] = {
+                'qty': qty,
+                'protection_status': protection_status,
+                'open_stop_orders': len(stops),
+                'open_stop_qty': round(remaining, 8),
+            }
             continue
         if entry:
             plan = dict(plan)
