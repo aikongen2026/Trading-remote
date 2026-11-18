@@ -18,8 +18,8 @@ Optional:
   RENDER_BANDWIDTH_CAP_GB=5
   RENDER_USAGE_WARN_PCT=55 (upper bound)
   RENDER_USAGE_SAVE_PCT=65 (upper bound)
-  RENDER_USAGE_STRONG_PCT=73 (upper bound)
-  RENDER_USAGE_HARD_PCT=82 (upper bound)
+  RENDER_USAGE_STRONG_PCT=70 (upper bound)
+  RENDER_USAGE_HARD_PCT=75 (upper bound)
   RENDER_USAGE_CHECK_SEC=300 (capped at 600)
 """
 from __future__ import annotations
@@ -103,8 +103,8 @@ def policy_for_percent(percent: float, configured: bool = True) -> str:
     # Environment values may tighten these thresholds, never relax them.
     warn = min(_float_env("RENDER_USAGE_WARN_PCT", 55.0), 55.0)
     save = min(_float_env("RENDER_USAGE_SAVE_PCT", 65.0), 65.0)
-    strong = min(_float_env("RENDER_USAGE_STRONG_PCT", 73.0), 73.0)
-    hard = min(_float_env("RENDER_USAGE_HARD_PCT", 82.0), 82.0)
+    strong = min(_float_env("RENDER_USAGE_STRONG_PCT", 70.0), 70.0)
+    hard = min(_float_env("RENDER_USAGE_HARD_PCT", 75.0), 75.0)
     p = max(0.0, float(percent))
     if p >= 100.0:
         return "OVER"
@@ -269,8 +269,8 @@ class RenderUsageGuard:
             "scope": "configured_services" if self.resources else "current_workspace_services",
             "warn_pct": min(_float_env("RENDER_USAGE_WARN_PCT", 55.0), 55.0),
             "save_pct": min(_float_env("RENDER_USAGE_SAVE_PCT", 65.0), 65.0),
-            "strong_pct": min(_float_env("RENDER_USAGE_STRONG_PCT", 73.0), 73.0),
-            "hard_pct": min(_float_env("RENDER_USAGE_HARD_PCT", 82.0), 82.0),
+            "strong_pct": min(_float_env("RENDER_USAGE_STRONG_PCT", 70.0), 70.0),
+            "hard_pct": min(_float_env("RENDER_USAGE_HARD_PCT", 75.0), 75.0),
             "checked_at": _utc_now_iso(),
             "month_start": _month_start_iso(),
             "auto_downgrade": False,
