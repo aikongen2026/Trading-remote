@@ -1832,6 +1832,15 @@ def main() -> None:
             refresh_bars_every_sec = int(control.get("refresh_bars_every_sec", max(10, min(60, timeframe_to_seconds(timeframe) // 2))))
             refresh_bars_every_sec = max(1, refresh_bars_every_sec)
             refresh_bars_every_sec = max(refresh_bars_every_sec, usage_bar_floor)
+            if has_crypto_exposure:
+                # Exit surveillance must retain recent market bars while any
+                # crypto asset is held. Never loosen risk/execution gates.
+                _, exposure_bar_floor = throttle_limits(
+                    render_usage_policy, has_crypto_position=True
+                )
+                refresh_bars_every_sec = min(
+                    refresh_bars_every_sec, max(10, exposure_bar_floor)
+                )
 
             stocks = symbol_universe(control)
             crypto_symbols = crypto_universe(control)
@@ -1969,13 +1978,10 @@ def main() -> None:
                 for _pos in (pos_raw if isinstance(pos_raw, list) else [])
             )
             if has_crypto_exposure:
-                exposure_poll_floor, exposure_bar_floor = throttle_limits(
+                exposure_poll_floor, _ = throttle_limits(
                     render_usage_policy, has_crypto_position=True
                 )
-                # Faster existing-position exit surveillance cannot be achieved
-                # by just overriding min floors if manually configured slower.
                 poll_sec = min(poll_sec, max(1, exposure_poll_floor))
-                refresh_bars_every_sec = min(refresh_bars_every_sec, max(10, exposure_bar_floor))
 
             orders_raw = cached_orders.get("value") or []
             if isinstance(orders_raw, list):
@@ -3356,6 +3362,9 @@ def main() -> None:
             # Keep the final sleep aligned with actual loop logic. Previously
             # the initial throttle was silently overwritten at loop end.
             _has_crypto = bool(locals().get("has_crypto_exposure", False))
+            # Broker data failure must not trigger a long idle interval.
+            if not bool(locals().get("broker_fresh", False)):
+                _has_crypto = True
             usage_sleep_floor, _ = throttle_limits(_policy, has_crypto_position=_has_crypto)
             poll_sec = max(poll_sec, usage_sleep_floor)
         except Exception:
