@@ -6,6 +6,7 @@ on:
       - 'trading_bot.py'
       - 'control_server.py'
       - 'tests/test_aep_paper_stop.py'
+      - 'tests/test_aep_origin_proxy.py'
       - '.github/workflows/aep-paper-stop.yml'
 jobs:
   safe-human-confirmation:
@@ -18,4 +19,6 @@ jobs:
       - name: Install requirements
         run: pip install -r requirements.txt
       - name: Verify PAPER-only stop, consent and replay safety
-        run: python -m unittest discover -s tests -p 'test_aep_paper_stop.py' -v
+        run: |
+          python -m unittest discover -s tests -p 'test_aep_paper_stop.py' -v
+          python -m unittest discover -s tests -p 'test_aep_origin_proxy.py' -v

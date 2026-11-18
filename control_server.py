@@ -2709,12 +2709,46 @@ def aep_protection_preview():
     return jsonify({"ok": True, **info, "preview_nonce": nonce})
 
 
+def _aep_same_origin_request() -> bool:
+    """Validate the actual browser origin, independent of proxy scheme.
+
+    Render may terminate TLS at its proxy and expose request.host_url using
+    HTTP internally, even while Chrome correctly sends HTTPS in Origin.
+    Compare normalized origin host/port, while requiring HTTPS in PUBLIC_MODE.
+    Keep the signed session preview, nonce and explicit consent checks.
+    """
+    from urllib.parse import urlsplit
+    fetch_site = str(request.headers.get("Sec-Fetch-Site") or "").lower()
+    if fetch_site in {"cross-site", "same-site"}:
+        return False
+    origin = str(request.headers.get("Origin") or "")
+    if not origin:
+        # Older desktop webviews omit Origin for same-origin POST; the
+        # per-session random preview nonce must still be validated.
+        return True
+    try:
+        parsed = urlsplit(origin)
+        port = parsed.port
+        req_host = urlsplit("http://" + str(request.host)).hostname
+    except (ValueError, TypeError):
+        return False
+    if (parsed.scheme not in {"http", "https"} or parsed.username or
+            parsed.password or parsed.path or parsed.query or parsed.fragment or
+            not parsed.hostname or parsed.hostname.lower() != str(req_host or "").lower()):
+        return False
+    if PUBLIC_MODE and parsed.scheme != "https":
+        return False
+    expected_port = 443 if parsed.scheme == "https" else 80
+    if port not in (None, expected_port):
+        return False
+    return True
+
+
 @app.post("/api/aep-protection/confirm")
 def aep_protection_confirm():
     from paper_aep_protection import AepProtectionError, submit_approved_aep_stop
-    origin = request.headers.get("Origin", "")
-    if origin and origin.rstrip("/") != request.host_url.rstrip("/"):
-        return jsonify({"ok": False, "error": "Ugyldig opprinnelse"}), 403
+    if not _aep_same_origin_request():
+        return jsonify({"ok": False, "error": "Ugyldig opprinnelse. Åpne appen fra riktig nettadresse."}), 403
     data = request.get_json(silent=True) or {}
     preview = session.pop("aep_stop_preview", None)
     if not isinstance(preview, dict) or not secrets.compare_digest(str(data.get("nonce") or ""), str(preview.get("nonce") or "-")):
