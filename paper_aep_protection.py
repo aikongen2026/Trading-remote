@@ -64,8 +64,24 @@ def fresh_aep_unprotected(api) -> dict:
     qty = _number(row.get("qty"), "AEP-antall")
     if qty != int(qty):
         raise AepProtectionError("Kun hele AEP-aksjer støttes for GTC stop")
-    if open_sell_orders(orders, "AEP"):
-        raise AepProtectionError("AEP har allerede en åpen salgsordre. Ingen ny stopordre lagt inn.")
+    blocking_sells = open_sell_orders(orders, "AEP")
+    if blocking_sells:
+        # Expose only factual broker-order metadata, never cancel/adopt a manual
+        # order or bypass the one-exit-at-a-time rule.
+        labels = []
+        for order in blocking_sells[:3]:
+            kind = str(order.get("type") or "ukjent").lower()[:16]
+            amount = str(order.get("qty") or "?")[:16]
+            status = str(order.get("status") or "ukjent").lower()[:24]
+            oid = str(order.get("id") or "").strip()
+            reference = (" ID " + oid[:12]) if oid else ""
+            labels.append(f"{kind} salg {amount} stk ({status}){reference}")
+        others = f" (+{len(blocking_sells)-3} flere)" if len(blocking_sells) > 3 else ""
+        raise AepProtectionError(
+            "AEP har en annen åpen salgsordre: " + "; ".join(labels) + others
+            + ". Ingen stopordre sendt. Se Alpaca PAPER > Orders > Open; "
+            + "kontroller eksisterende ordre før eventuell manuell endring."
+        )
     mark = _number(row.get("current_price"), "AEP-kurs")
     suggested = float((Decimal(str(mark)) * Decimal("0.95")).quantize(
         Decimal("0.01"), rounding=ROUND_DOWN))

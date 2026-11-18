@@ -67,8 +67,10 @@ class AepStopTests(unittest.TestCase):
     def test_reject_existing_open_sell_order(self):
         self.broker.stop_orders = [{"symbol": "AEP", "side": "sell",
                                     "qty": "2", "status": "new", "type": "limit"}]
-        with self.assertRaises(AepProtectionError):
+        with self.assertRaises(AepProtectionError) as caught:
             fresh_aep_unprotected(self.broker)
+        self.assertIn("limit salg 2 stk (new)", caught.exception.message)
+        self.assertIn("Alpaca PAPER > Orders > Open", caught.exception.message)
         self.assertEqual(self.broker.sent, [])
 
     def test_price_bounds_and_decimal_precision(self):
