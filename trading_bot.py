@@ -2012,12 +2012,30 @@ def main() -> None:
             supervision = {"actions": {}, "unknown_positions": [], "missing_protection": []}
             if broker_fresh:
                 supervision = supervise_stocks(api, pos_raw, orders, trade_plans, execution_guard,
-                                               control, clk, runtime_audit)
+                                               control, clk, runtime_audit,
+                                               open_orders=cached_open_orders.get("value") or [])
                 save_trade_plans(trade_plans)
             else:
-                notes.append("Broker data stale: entries blocked; supervision awaiting fresh positions/orders/clock")
+                supervision["broker_data_fresh"] = False
+                # Do not present unknown positions as safe if the latest broker
+                # open-order snapshot cannot be verified. This is read-only.
+                for _p in pos_raw if isinstance(pos_raw, list) else []:
+                    _symbol = str(_p.get("symbol") or "").upper()
+                    _is_crypto = "/" in _symbol or str(_p.get("asset_class") or "").lower() == "crypto"
+                    if _symbol and not _is_crypto and float(_p.get("qty") or 0) > 0:
+                        supervision["unknown_positions"].append(_symbol)
+                        supervision["unmanaged_positions"][_symbol] = {
+                            "qty": float(_p.get("qty") or 0),
+                            "protection_status": "BROKER_DATA_STALE",
+                            "open_stop_orders": None,
+                            "open_stop_qty": None,
+                        }
+                notes.append("Broker data stale: entries blocked; stock protection status unverified")
             if supervision["actions"]:
                 notes.append("Risk supervision: " + json.dumps(supervision["actions"]))
+            if supervision.get("unmanaged_positions"):
+                notes.append("UNMANAGED STOCK RISK (read-only): " +
+                             json.dumps(supervision["unmanaged_positions"]))
             if runtime_audit.summary().get("warning"):
                 notes.append(runtime_audit.summary()["warning"])
             if trade_stocks and not stocks:
