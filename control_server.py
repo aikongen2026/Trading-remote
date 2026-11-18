@@ -2440,6 +2440,18 @@ HTML = r"""\n<!doctype html>
     <section class="card statusCard">
       <div class="cardHead"><div class="cardTitle"><span class="titleIcon">⌁</span><h2>Status</h2></div><span class="sub">Live systemstatus</span></div>
       <div id="authBanner" class="banner warn">Kobler til motoren…</div>
+      <div id="aepProtectPanel" style="display:none;margin:8px 0;padding:10px;border:1px solid #b43d4a;border-radius:9px;">
+        <div style="font-weight:700;margin-bottom:5px;">AEP – mangler stopordre i PAPER</div>
+        <div style="font-size:12px;margin-bottom:8px;">Kontroller aksjeantallet og godkjenn en stoppkurs. Stopordre kan selge lavere enn stoppkurs ved raske fall. Ingen ordre sendes automatisk.</div>
+        <button class="btn ghost" id="aepPreviewBtn" onclick="previewAepProtection()">Sjekk AEP og forhåndsvis stop-loss</button>
+        <div id="aepProtectReview" style="display:none;margin-top:9px;">
+          <div id="aepProtectInfo" style="font-size:12px;white-space:pre-line;margin-bottom:6px"></div>
+          <label for="aepStopPrice" style="font-size:12px">Stoppkurs i USD</label>
+          <input type="number" id="aepStopPrice" min="0.01" step="0.01" style="width:115px;max-width:100%;margin:0 6px" />
+          <button class="btn ghost" id="aepConfirmBtn" onclick="confirmAepProtection()">Godkjenn AEP PAPER stopordre</button>
+        </div>
+        <div id="aepProtectFeedback" role="status" aria-live="polite" style="font-size:12px;margin-top:7px"></div>
+      </div>
       <div class="statusGrid">
         <div class="statusItem"><div class="statusLabel">Motor</div><div id="st_engine" class="statusVal">-</div></div>
         <div class="statusItem"><div class="statusLabel">Versjon</div><div id="st_version" class="statusVal mono small">-</div></div>
@@ -2524,6 +2536,1486 @@ function safeHtml(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<
 async function toggleProfitTrades(days){const row=document.getElementById('profit_row_'+days),box=document.getElementById('profit_details_'+days);const opening=!box.classList.contains('open');box.classList.toggle('open',opening);row.classList.toggle('open',opening);if(!opening||profitTradeLoaded[days])return;box.innerHTML='<div class="profitLoading">Henter faktiske vinnende trades…</div>';try{const r=await apiFetch('/api/profit_trades?days='+days+'&ts='+Date.now());const d=await r.json();if(!r.ok||d.ok===false)throw new Error(d.detail||d.error||'ukjent feil');const trades=d.trades||[];profitTradeLoaded[days]=true;let h=`<div class="profitTradeSummary">${Number(d.winner_count||0)} vinnende trade${Number(d.winner_count||0)===1?'':'s'} • realisert brutto ${money(d.gross_profit_usd||0)}${Number(d.shown||0)<Number(d.winner_count||0)?' • viser '+Number(d.shown||0):''}</div>`;if(!trades.length){h+='<div class="profitEmpty">Ingen avsluttede vinnende trades funnet i perioden.</div>'}else{h+=trades.map(t=>`<div class="profitTrade"><div class="profitTradeTop"><span class="profitTradeSym">${safeHtml(t.symbol)}</span><span class="profitTradePnl">${money(t.gross_pnl_usd)} (${Number(t.gross_return_pct||0)>=0?'+':''}${Number(t.gross_return_pct||0).toFixed(2)}%)</span></div><div class="profitTradeMeta">${fmt(t.entry_price)} → ${fmt(t.exit_price)} • ${safeHtml(t.qty)} stk • holdt ${holdText(t.hold_sec)}<br>${safeHtml(String(t.exit_time||'').replace('T',' ').replace('Z',' UTC'))}</div></div>`).join('')}h+='<div class="profitTradeMeta" style="padding:6px 3px 0">Brutto P/L fra faktiske Alpaca fills. Gebyrer er ikke fordelt på enkelt-trades.</div>';box.innerHTML=h}catch(e){box.innerHTML='<div class="profitEmpty neg">Kunne ikke hente trade-detaljer: '+safeHtml(e.message||e)+'</div>'}}
 async function apiFetch(url,opt={}){const r=await fetch(url,{cache:'no-store',...opt});if(r.status===401){location.href='/login';throw new Error('login_required')}return r}
 async function postControl(url,payload){await apiFetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});await refresh(true)}
+let aepPreview=null, aepSubmitBusy=false;
+async function previewAepProtection(){
+  const out=document.getElementById('aepProtectFeedback');
+  document.getElementById('aepProtectReview').style.display='none';
+  aepPreview=null;
+  out.textContent='Kontrollerer åpne posisjoner og alle aktive ordre hos Alpaca PAPER…';
+  try{
+    const r=await apiFetch('/api/aep-protection/preview',{
+      method:'POST',headers:{'Content-Type':'application/json'},body:'{}'
+    });
+    const data=await r.json();
+    if(!r.ok||!data.ok)throw new Error(data.error||'Forhåndsvisning feilet');
+    aepPreview=data;
+    document.getElementById('aepProtectInfo').textContent=
+      'Konto: Alpaca PAPER | AEP: '+data.qty+' aksjer | Siste meglerkurs: await postControl('/api/control',{armed:true,paused:false,kill:false})}
+async function stopTrading(){await postControl('/api/control',{armed:false,paused:true})}
+async function emergencyStop(){if(confirm('Aktivere NØDSTOPP? Nye handler blokkeres umiddelbart.'))await postControl('/api/control',{armed:false,paused:true,kill:true})}
+async function toggleBool(k){const r=await apiFetch('/api/control?ts='+Date.now());const c=await r.json();await postControl('/api/control',{[k]:!Boolean(c[k])})}
+async function setMarket(m){await postControl('/api/control',{market_mode:m})}
+let strategySaving=false, strategyChoiceDirty=false;
+async function setStrategy(){
+  const select=document.getElementById('strategySel'), chosen=select.value;
+  if(strategySaving||!['scalp','hype','trend','cross'].includes(chosen))return;
+  const cryptoChosen=chosen==='hype'?'scalp':chosen;
+  strategySaving=true;
+  try{
+    const response=await apiFetch('/api/control',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({strategy_mode:chosen,crypto_strategy_mode:cryptoChosen})
+    });
+    if(!response.ok)throw new Error('HTTP '+response.status);
+    const saved=await response.json();
+    if(saved.strategy_mode!==chosen||saved.crypto_strategy_mode!==cryptoChosen)
+      throw new Error('Valgt strategi ble ikke bekreftet av serveren');
+    strategyChoiceDirty=false;
+    await refresh(true);
+  }catch(error){
+    strategyChoiceDirty=true;
+    alert('Kunne ikke lagre strategien: '+String(error.message||error));
+  }finally{strategySaving=false}
+}
+async function setProfile(n){const p=n==='balanced'?{activity_profile:'balanced',intelligence_entry_score:67,intelligence_exit_score:42,fast_sma:8,slow_sma:24,hype_mom_n:5,min_mom_pct:.001,min_move_pct:.0003,min_slope_pct:.00025,cooldown_sec:90,take_profit_pct:.006,stop_loss_pct:.004,trailing_activate_pct:.003,trailing_stop_pct:.003,max_hold_sec:2700,refresh_bars_every_sec:15,crypto_crypto_cooldown_sec:60,crypto_take_profit_pct:.012,crypto_stop_loss_pct:.007,crypto_trailing_activate_pct:.007,crypto_trailing_stop_pct:.0045,crypto_max_hold_sec:3600,crypto_max_spread_bps:15,crypto_taker_fee_bps:25,crypto_min_net_edge_bps:30,crypto_entry_confirm_bars:2}:{activity_profile:'active',intelligence_entry_score:60,intelligence_exit_score:38,fast_sma:6,slow_sma:18,hype_mom_n:4,min_mom_pct:.0006,min_move_pct:.00015,min_slope_pct:.00015,cooldown_sec:45,take_profit_pct:.004,stop_loss_pct:.003,trailing_activate_pct:.002,trailing_stop_pct:.0025,max_hold_sec:1800,refresh_bars_every_sec:10,crypto_crypto_cooldown_sec:30,crypto_take_profit_pct:.01,crypto_stop_loss_pct:.006,crypto_trailing_activate_pct:.006,crypto_trailing_stop_pct:.004,crypto_max_hold_sec:2700,crypto_max_spread_bps:25,crypto_taker_fee_bps:25,crypto_min_net_edge_bps:20,crypto_entry_confirm_bars:2};await postControl('/api/control',p)}
+async function testBuy(){await postControl('/api/test_buy',{symbol:document.getElementById('buySym').value.trim().toUpperCase(),qty:Number(document.getElementById('buyQty').value||1)})}
+async function testSellAll(){await postControl('/api/test_sell_all',{symbol:document.getElementById('sellSym').value.trim().toUpperCase()})}
+let hudLatestStatus=null;
+function hudKey(event,target){if(event.key==='Enter'||event.key===' '){event.preventDefault();hudNavigate(target)}}
+function hudClose(){document.getElementById('hudQuickPanel').hidden=true}
+function hudNavigate(target){
+  if(target==='home'){hudClose();window.scrollTo({top:0,behavior:'smooth'});return}
+  if(target==='results'){hudClose();document.getElementById('profit_row_7')?.scrollIntoView({behavior:'smooth',block:'center'});return}
+  if(target==='positions'){hudClose();document.querySelector('.tableCard')?.scrollIntoView({behavior:'smooth',block:'start'});return}
+  if(target==='settings'){hudClose();const d=document.querySelector('.controlCard details.utility');if(d)d.open=true;document.querySelector('.controlCard')?.scrollIntoView({behavior:'smooth',block:'start'});return}
+  if(target==='reports'){hudClose();document.querySelector('.exportBox')?.scrollIntoView({behavior:'smooth',block:'center'});document.getElementById('exportDays')?.focus();return}
+  if(target==='market'||target==='learning'){
+    const panel=document.getElementById('hudQuickPanel');
+    panel.hidden=false;
+    document.getElementById('hudQuickTitle').textContent=target==='market'?'Markedsdata':'AI-læring';
+    const st=hudLatestStatus||{};
+    const rows=[];
+    const add=(label,value)=>rows.push('<tr><td>'+safeHtml(label)+'</td><td>'+safeHtml(value??'-')+'</td></tr>');
+    if(target==='market'){
+      const health=st.intelligence?.source_health||{};
+      add('Aksjefeed',st.market_data?.stock_feed);
+      add('Kryptofeed',health.crypto_stream);
+      add('Aksjestrøm',health.stock_stream);
+      add('Nyheter',health.alpaca_news);
+      add('GDELT',health.gdelt);
+      add('SEC',health.sec);
+      const symbols=Object.values(st.symbols||{}).filter(x=>x.market==='CRYPTO');
+      add('Krypto: gamle kurser',symbols.filter(x=>String(x.action||'').startsWith('QUOTE_STALE')).length+' / '+symbols.length);
+      add('Status',st.engine_state);
+    }else{
+      const diag=st.entry_diagnostics||{};
+      const shadow=st.adaptive_edge?.shadow?.models||{};
+      add('Positive signaler',diag.positive_signals??0);
+      for(const [reason,n] of Object.entries(diag.blocker_counts||{}))add('Blokkert: '+reason,n);
+      for(const [model,stats] of Object.entries(shadow)){
+        const label=model.replaceAll('_',' ');
+        add(label,'Målt: '+(stats.samples??0)+' • Treff: '+(stats.win_rate_pct??'-')+'% • Avkastning: '+(stats.avg_return_bps??'-')+' bp');
+        if(stats.outcome_coverage_pct!=null)add(label+' datadekning',stats.outcome_coverage_pct+'%');
+      }
+      add('Læringsdatabase',st.learning_health?.last_error||'Ingen rapportert feil');
+    }
+    document.getElementById('hudQuickBody').innerHTML='<table>'+rows.join('')+'</table>';
+  }
+}
+document.addEventListener('keydown',event=>{if(event.key==='Escape')hudClose()});
+function downloadAnalysis(){const el=document.getElementById('exportDays');let d=parseInt(el?.value||'7',10);if(!Number.isFinite(d))d=7;d=Math.max(1,Math.min(30,d));window.location.href='/api/export?days='+encodeURIComponent(d)}
+function setSymbolFilter(f,btn){symbolFilter=f;document.querySelectorAll('.filterBtn').forEach(x=>x.classList.remove('active'));if(btn)btn.classList.add('active');filterSymbols()}
+function filterSymbols(){const q=(document.getElementById('symbolSearch')?.value||'').trim().toUpperCase();document.querySelectorAll('#tblSymbols tr').forEach(tr=>{const market=(tr.dataset.market||'').toLowerCase(),pos=Number(tr.dataset.pos||0);const matchFilter=symbolFilter==='all'||(symbolFilter==='stocks'&&market==='stock')||(symbolFilter==='crypto'&&market==='crypto')||(symbolFilter==='active'&&pos!==0);const matchQ=!q||(tr.dataset.symbol||'').includes(q);tr.style.display=matchFilter&&matchQ?'':'none'})}
+function renderSymbols(s){const b=document.getElementById('tblSymbols');b.innerHTML='';Object.keys(s||{}).sort((a,c)=>(s[a]?.market==='CRYPTO'?0:1)-(s[c]?.market==='CRYPTO'?0:1)||a.localeCompare(c)).forEach(sym=>{const x=s[sym]||{},sig=x.signal===1?'BUY':x.signal===-1?'SELL':(x.signal??'0');const tr=document.createElement('tr');tr.dataset.market=String(x.market||'');tr.dataset.pos=String(x.pos_qty??0);tr.dataset.symbol=String(sym).toUpperCase();const edge=x.debug?.p_tp_before_sl_pct!=null?('TP '+x.debug.p_tp_before_sl_pct+'% / EV '+(x.debug.ev_bps>=0?'+':'')+x.debug.ev_bps+'bp'):(x.debug?.prob_up_pct!=null?('P '+x.debug.prob_up_pct+'% / EV '+(x.debug.ev_bps>=0?'+':'')+x.debug.ev_bps+'bp'):'-');const marketBadge='<span class="marketBadge '+String(x.market||'').toLowerCase()+'">'+safeHtml(x.market||'-')+'</span>';const action=String(x.action||'NONE');const actionClass=/BUY|ENTRY|SUBMIT|FILLED/.test(action)?'pos':/SELL|EXIT|STOP|LOSS|ERROR|RECONCILE/.test(action)?'neg':'';tr.innerHTML=`<td>${marketBadge}</td><td><b class="symName">${safeHtml(sym)}</b></td><td>${fmt(x.price)}</td><td>${fmt(x.bid)}</td><td>${fmt(x.ask)}</td><td>${x.debug?.spread_bps??'-'}</td><td class="edgeCell">${edge}</td><td><b>${x.debug?.intel_score??'-'}</b></td><td>${sig}</td><td>${x.pos_qty??0}</td><td>${fmt(x.avg_entry)}</td><td class="${actionClass}">${safeHtml(action)}</td><td class="neg">${safeHtml(x.error||'')}</td>`;b.appendChild(tr)});filterSymbols()}
+function renderOrders(o){const b=document.getElementById('tblOrders');b.innerHTML='';(o||[]).forEach(x=>{const tr=document.createElement('tr'),t=String(x.filled_at||x.submitted_at||x.created_at||'').replace('T',' ').replace('Z','');tr.innerHTML=`<td class="mono small">${t||'-'}</td><td><b>${x.symbol||''}</b></td><td>${x.side||''}</td><td>${x.qty||x.notional||''}</td><td>${x.type||''}</td><td>${x.status||''}</td><td class="mono small">${x.id||''}</td>`;b.appendChild(tr)})}
+function setKpi(id,value,kind=''){const el=document.getElementById(id);if(!el)return;el.textContent=value??'-';el.className='kpiValue '+kind}
+let dashboardRefreshMs=10000;
+function updateKpis(s,running,cr,guardBad,guardPending){const p=s.profit_summary||{};const cls=v=>Number(v)>0?'pos':Number(v)<0?'neg':'';setKpi('kpi_today',money(p.today_usd??s.day_pnl_usd),cls(p.today_usd??s.day_pnl_usd));setKpi('kpi_3d',p.days3_usd==null?'-':money(p.days3_usd),cls(p.days3_usd));setKpi('kpi_7d',p.days7_usd==null?'-':money(p.days7_usd),cls(p.days7_usd));const _unmanaged=Object.values((s.risk_supervision||{}).unmanaged_positions||{});const _risky=_unmanaged.some(x=>x?.protection_status!=='STOP_ORDER_PRESENT')||(s.risk_supervision||{}).broker_data_fresh===false;setKpi('kpi_guard',_risky?'UKJENT':guardBad?'AVSTEM':_unmanaged.length?'MANUELL':guardPending?'EXIT':'OK',_risky||guardBad?'neg':_unmanaged.length?'warn':'pos');setKpi('kpi_cloud',cr.render?(cr.always_on_expected?'24/7 OK':'FREE'):'LOKAL',cr.always_on_expected?'pos':cr.render?'warn':'');const ru=s.render_usage||{};const rup=String(ru.policy||'UNMETERED').toUpperCase();const usage=ru.percent==null?'IKKE KOBLET':Number(ru.used_gb||0).toFixed(2)+'/'+Number(ru.cap_gb||5).toFixed(0)+' GB';setKpi('kpi_usage',usage,(rup==='HARD'||rup==='OVER')?'neg':rup==='NORMAL'?'pos':'');dashboardRefreshMs=(rup==='HARD'||rup==='OVER')?120000:rup==='STRONG'?90000:rup==='SAVE'?75000:rup==='WARN'?60000:10000;setKpi('kpi_alpaca',s.auth_ok===true?'Tilkoblet':s.auth_ok===false?'Feil':'Venter',s.auth_ok===true?'pos':s.auth_ok===false?'neg':'');const sx=s.saxo_sim||{};const sxState=String(sx.state||'DISABLED');const saxoButton=document.getElementById('saxoConnectLink');if(saxoButton){const connected=sx.account_connected===true&&sx.oauth_refresh_ready===true&&sx.token_persisted===true;saxoButton.style.display=connected?'none':'inline-block';saxoButton.textContent=sx.account_connected===true?'Saxo SIM er tilkoblet':'Koble til Saxo SIM';}setKpi('kpi_saxo',sxState==='RUNNING_SIM'?'SIM AKTIV':sxState==='DISABLED'?'AV':sxState==='WAITING_FOR_SIM_TOKEN'?'VENTER TOKEN':sxState,sxState==='RUNNING_SIM'?'pos':sxState==='ERROR'?'neg':'');document.getElementById('saxoDetails').textContent='State: '+sxState+' • konto: '+(sx.account_connected===true?'tilkoblet':'ikke bekreftet')+'\nSymboler: '+Number(sx.symbols_resolved||0)+'/'+Number(sx.symbols_requested||0)+' • posisjoner: '+Number(sx.positions||0)+'\nTrafikk: '+Number(sx.traffic_day_mb||0).toFixed(2)+' MB i dag / '+Number(sx.traffic_month_mb||0).toFixed(2)+' MB måned\nSiste poll: '+(sx.last_successful_poll||'ingen')+'\n'+(sx.error||sx.note||'');const raw=String(s.last_update||'');let t='-';try{const d=new Date(raw);if(!Number.isNaN(d.getTime()))t=d.toLocaleTimeString('no-NO',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}catch(e){}setKpi('kpi_updated',t);const chip=document.getElementById('headerRunChip');if(chip){chip.textContent=running?'TRADING AKTIV':'TRADING PAUSET';chip.className='runChip '+(running?'on':'off')}}
+async function refresh(force=false){try{const r=await apiFetch('/api/status?ts='+Date.now()+(force?'&force=1':''));const s=await r.json();hudLatestStatus=s;const live=Boolean(s.auth_ok)&&String(s.engine_state||'').toUpperCase()==='RUNNING';document.getElementById('liveDot').className='dot '+(live?'ok':'bad');document.getElementById('liveText').textContent=live?'ONLINE':'IKKE KLAR';const running=Boolean(s.armed)&&!Boolean(s.paused)&&!Boolean(s.kill);document.getElementById('st_engine').textContent=s.engine_state||'-';document.getElementById('st_version').textContent=s.version||'-';document.getElementById('st_auth').innerHTML=pill(s.auth_ok);document.getElementById('st_running').innerHTML=pill(running);const cr=s.cloud_runtime||{};const cloudEl=document.getElementById('st_cloud');if(cr.render){cloudEl.innerHTML=cr.always_on_expected?'<span class="pill good">24/7 OK</span>':'<span class="pill bad">RENDER FREE</span>'}else{cloudEl.innerHTML='<span class="pill neutral">LOKAL</span>'}const eg=s.execution_guard||{};const riskSupervision=s.risk_supervision||{};const unmanaged=riskSupervision.unmanaged_positions||{};const unmanagedSymbols=Object.keys(unmanaged);const unverified=unmanagedSymbols.filter(x=>unmanaged[x]?.protection_status!=='STOP_ORDER_PRESENT');const guardBad=Number(eg.reconcile_required||0)>0||unverified.length>0||riskSupervision.broker_data_fresh===false;const guardPending=Number(eg.active_exits||0)>0;document.getElementById('st_guard').innerHTML=guardBad?'<span class="pill bad">'+(unverified.length?'UBESKYTTET/UKJENT '+unverified.length:riskSupervision.broker_data_fresh===false?'MEGLERDATA UKJENT':'AVSTEM '+Number(eg.reconcile_required||0))+'</span>':unmanagedSymbols.length?'<span class="pill neutral">UKJENT POSISJON '+unmanagedSymbols.length+'</span>':guardPending?'<span class="pill neutral">EXIT '+Number(eg.active_exits||0)+'</span>':'<span class="pill good">OK</span>';updateKpis(s,running,cr,guardBad,guardPending);document.getElementById('st_market').textContent=(s.market_mode||'auto').toUpperCase();document.getElementById('st_session').textContent=s.stock_session||'-';document.getElementById('st_crypto').innerHTML=pill(s.crypto_24_7);document.getElementById('st_paper').innerHTML=pill(s.paper);const currentStrategy=(s.market_mode==='crypto'?(s.crypto_strategy_mode||s.strategy_mode):s.strategy_mode)||'-';
+const selectedStrategy=(s.market_mode==='crypto'?(s.selected_crypto_strategy_mode||s.selected_strategy_mode):(s.selected_strategy_mode||s.strategy_mode))||'-';
+document.getElementById('st_strategy').textContent=currentStrategy===selectedStrategy?currentStrategy:currentStrategy+' (bytter til '+selectedStrategy+')';const ii=s.intelligence||{};document.getElementById('st_intel').innerHTML=pill(ii.enabled!==false);const pe=s.profit_engine||{};document.getElementById('st_edge').innerHTML=pill(pe.enabled!==false);const ah=s.audit_health||{},lh=s.learning_health||{},bh=s.broker_history||{},sb=s.storage_backup||{};const storageLabel=sb.configured?(sb.last_error?'backupfeil':sb.last_success_utc?'databasebackup hver 5. min':'backup venter'):ah.persistent===false?'midlertidig lagring':'lokal lagring';document.getElementById('auditSummary').textContent='Historikk: '+((ah.last_error||lh.last_error)?'lagringsfeil':storageLabel)+' • Alpaca '+(bh.stream||'starter')+' • '+(bh.sync_complete?'historikk hentet':'historikk venter');const ae=s.adaptive_edge||{},md=s.market_data||{};const sh=ae.shadow?.models||{};const shN=Object.values(sh).reduce((a,x)=>a+Number(x?.samples||0),0);document.getElementById('st_adaptive').textContent=`${String(md.stock_feed||'iex').toUpperCase()} • router ${ae.router?'ON':'OFF'} • univers ${Number(ae.active_symbols||0)}/${Number(ae.total_symbols||0)} • shadow ${shN}`;document.getElementById('st_regime').textContent=(ii.regime_label||'-')+' '+(ii.regime_score??'');document.getElementById('st_risk').textContent=(ii.global_risk??'-')+'/100';document.getElementById('st_news').textContent=ii.last_headline||'-';document.getElementById('st_pnl').textContent=fmt(s.day_pnl_usd);renderProfit(s.profit_summary||{today_usd:s.day_pnl_usd});document.getElementById('st_last').textContent=s.last_update||'';document.getElementById('st_notes').textContent=s.notes||'';if(!strategySaving&&!strategyChoiceDirty){
+  const select=document.getElementById('strategySel');
+  const saved=s.selected_strategy_mode||s.strategy_mode||'scalp';
+  if(['scalp','hype','trend','cross'].includes(saved))select.value=saved;
+}document.getElementById('paperTests').style.display=s.paper===false?'none':'block';['auto','stocks','crypto'].forEach(m=>document.getElementById('m_'+m).classList.toggle('active',(s.market_mode||'auto')===m));const protect=document.getElementById('aepProtectPanel');
+if(protect)protect.style.display=unmanaged.AEP?.protection_status==='NO_STOP_ORDER'?'block':'none';
+const ab=document.getElementById('authBanner');if(unverified.length){ab.className='banner bad';ab.textContent='ADVARSEL: '+unverified.map(sym=>sym+' ('+String(unmanaged[sym]?.protection_status||'ukjent')+')').join(', ')+'. Posisjonen styres ikke automatisk av boten. Sjekk Alpaca PAPER; ingen ordre er lagt inn.';}else if(unmanagedSymbols.length){ab.className='banner warn';ab.textContent='Ukjent aksjeposisjon: '+unmanagedSymbols.join(', ')+'. Synlig stopordre er registrert, men boten forvalter den ikke.';}else if(s.auth_ok===false){ab.className='banner bad';ab.textContent='Alpaca avviser API-nøklene.'}else if(live&&cr.render&&cr.always_on_expected===false){ab.className='banner warn';ab.textContent='Trading kjører, men Render FREE kan sovne når dashboardet lukkes. Oppgrader Compute til 0.5c-512mb for ekte 24/7.'}else if(live){ab.className='banner good';ab.textContent=running?'Motor ONLINE – trading er STARTET.':'Motor ONLINE – trading er STOPPET/PAUSET.'}else{ab.className='banner warn';ab.textContent='Motoren starter eller restarter…'}renderSymbols(s.symbols||{});renderOrders(s.orders||[]);const lo=(s.orders||[])[0]?.id||'-';document.getElementById('lastOrderId').textContent=lo}catch(e){document.getElementById('liveDot').className='dot bad';document.getElementById('liveText').textContent='OFFLINE'}}
+async function refreshLoop(){await refresh(false);setTimeout(refreshLoop,dashboardRefreshMs)}refreshLoop();
+</script></body></html>\n"""
+
+
+@app.get("/")
+def home():
+    # Dashboard HTML contains modern JavaScript/CSS braces. Serving it directly
+    # avoids Jinja interpreting client-side syntax while still substituting the
+    # two server values the page needs. Login remains a normal Jinja template.
+    page = HTML.replace("{{ bot_version }}", str(BOT_VERSION)).replace("{{ build_id }}", str(BUILD_ID))
+    return Response(page, mimetype="text/html")
+
+
+@app.get("/manifest.webmanifest")
+def manifest():
+    return app.send_static_file("manifest.webmanifest")
+
+
+@app.get("/service-worker.js")
+def service_worker():
+    resp = app.send_static_file("sw.js")
+    resp.headers["Cache-Control"] = "no-cache"
+    resp.headers["Service-Worker-Allowed"] = "/"
+    return resp
+
+
+@app.get("/healthz")
+def healthz():
+    st = safe_read_json(STATUS_PATH, {})
+    last = st.get("last_update") if isinstance(st, dict) else None
+    age = None
+    if last:
+        try:
+            age = max(0.0, time.time() - datetime.fromisoformat(str(last).replace("Z", "+00:00")).timestamp())
+        except Exception:
+            pass
+    engine = st.get("engine_state") if isinstance(st, dict) else None
+    ok = engine not in {"AUTH_ERROR", "CRASHED"}
+    return jsonify({"ok": bool(ok), "engine_state": engine or "STARTING", "status_age_sec": age, "version": BOT_VERSION, "cloud_runtime": st.get("cloud_runtime", {}), "broker_history": st.get("broker_history", {}), "storage_backup": st.get("storage_backup", {})}), (200 if ok else 503)
+
+
+@app.post("/api/aep-protection/preview")
+def api_aep_protection_preview():
+    """Read fresh Alpaca PAPER data; never place an order in this endpoint."""
+    from paper_aep_protection import AepProtectionError, fresh_aep_unprotected
+    try:
+        from trading_bot import AlpacaRest, load_cfg
+        info = fresh_aep_unprotected(AlpacaRest(load_cfg()))
+    except AepProtectionError as exc:
+        return jsonify({"ok": False, "error": exc.message}), exc.code
+    except Exception:
+        return jsonify({"ok": False, "error": "Kunne ikke bekrefte fersk Alpaca PAPER-status"}), 503
+    nonce = secrets.token_urlsafe(22)
+    session["aep_protection_preview"] = {
+        "nonce": nonce, "qty": info["qty"],
+        "current_price": info["current_price"], "expires": time.time() + 120,
+    }
+    return jsonify({"ok": True, **info, "preview_nonce": nonce,
+                    "expires_in_seconds": 120})
+
+
+@app.post("/api/aep-protection/confirm")
+def api_aep_protection_confirm():
+    """Only an explicit two-stage dashboard action can send one PAPER stop."""
+    from paper_aep_protection import AepProtectionError, submit_approved_aep_stop
+    origin = request.headers.get("Origin", "")
+    if origin and origin.rstrip("/") != request.host_url.rstrip("/"):
+        return jsonify({"ok": False, "error": "Ugyldig opprinnelse"}), 403
+    payload = request.get_json(silent=True) or {}
+    preview = session.pop("aep_protection_preview", None)
+    if not isinstance(preview, dict) or not secrets.compare_digest(
+        str(payload.get("preview_nonce") or ""), str(preview.get("nonce") or "not-available")
+    ):
+        return jsonify({"ok": False, "error": "Hent ny forhåndsvisning før godkjenning"}), 409
+    if payload.get("confirmation") != "BEKREFT AEP PAPER STOP":
+        return jsonify({"ok": False, "error": "Ordren må bekreftes eksplisitt"}), 409
+    try:
+        from trading_bot import AlpacaRest, load_cfg
+        result = submit_approved_aep_stop(
+            AlpacaRest(load_cfg()), STATE_DIR, preview=preview,
+            stop_price=payload.get("stop_price"),
+        )
+    except AepProtectionError as exc:
+        return jsonify({"ok": False, "error": exc.message}), exc.code
+    except Exception:
+        return jsonify({"ok": False, "error": "Ordrestatus ukjent. Sjekk Alpaca PAPER."}), 503
+    return jsonify(result)
+
+
+@app.get("/api/control")
+def api_control_get():
+    return jsonify(safe_read_json(CONTROL_PATH, {}))
+
+
+@app.post("/api/control")
+def api_control_post():
+    patch = request.get_json(force=True, silent=True) or {}
+    allowed = {
+        "paused","kill","armed","extended_hours","test_mode","strategy_mode","crypto_strategy_mode","market_mode",
+        "fast_sma","slow_sma","hype_mom_n","min_mom_pct","min_move_pct","min_slope_pct","cooldown_sec",
+        "take_profit_pct","stop_loss_pct","trailing_activate_pct","trailing_stop_pct","max_hold_sec","refresh_bars_every_sec",
+        "crypto_cooldown_sec","crypto_take_profit_pct","crypto_stop_loss_pct","crypto_trailing_activate_pct","crypto_trailing_stop_pct",
+        "crypto_max_hold_sec","crypto_max_spread_bps","crypto_taker_fee_bps","crypto_min_net_edge_bps","crypto_entry_confirm_bars",
+        "activity_profile","intelligence_enabled","intelligence_entry_score","intelligence_exit_score",
+        "soft_exit_min_hold_sec","soft_exit_confirm_sec","entry_require_signal_reset","stock_entry_cutoff_min","stock_flatten_before_close_min","stock_loss_streak_window_sec","stock_loss_streak_count","stock_loss_streak_cooldown_sec","decision_log_interval_sec",
+        "adaptive_router_enabled","dynamic_universe_enabled","dynamic_universe_top_n","sector_confirmation_enabled","champion_challenger_enabled","shadow_log_interval_sec"
+    }
+    clean = {k:v for k,v in patch.items() if k in allowed}
+    return jsonify(patch_control(clean))
+
+
+@app.get("/api/status")
+def api_status():
+    st = safe_read_json(STATUS_PATH, {})
+    defaults = {"version":BOT_VERSION,"paper":True,"auth_ok":None,"engine_state":"STARTING","armed":False,"paused":True,"kill":False,"extended_hours":False,"auto_extended":False,"market_mode":"auto","stock_session":"CLOSED","crypto_24_7":True,"test_mode":False,"strategy_mode":"scalp","last_update":"","day_pnl_usd":0,"profit_summary":{"today_usd":0,"today_pct":0,"days3_usd":None,"days3_pct":None,"days7_usd":None,"days7_pct":None},"execution_guard":{"enabled":True,"active_exits":0,"blocked_entries":0,"reconcile_required":0},"adaptive_edge":{"enabled":True,"router":True,"active_symbols":0,"total_symbols":0},"market_data":{"stock_feed":"iex"},"notes":"","symbols":{},"orders":[]}
+    if isinstance(st, dict): defaults.update(st)
+    usage = safe_read_json(STATE_DIR / "render_usage.json", {})
+    if isinstance(usage, dict) and usage:
+        current = defaults.get("render_usage") if isinstance(defaults.get("render_usage"), dict) else {}
+        defaults["render_usage"] = {**current, **usage}
+    saxo = safe_read_json(STATE_DIR / "saxo_sim_status.json", {})
+    if isinstance(saxo, dict) and saxo:
+        defaults["saxo_sim"] = saxo
+    # Under bandwidth savings, the motor status can be minutes behind the
+    # preference saved in control.json. Keep the selector on the saved value.
+    saved_control = safe_read_json(CONTROL_PATH, {})
+    if isinstance(saved_control, dict):
+        selected = saved_control.get("strategy_mode")
+        selected_crypto = saved_control.get("crypto_strategy_mode")
+        if selected in {"scalp", "hype", "trend", "cross"}:
+            defaults["selected_strategy_mode"] = selected
+        if selected_crypto in {"scalp", "trend", "cross"}:
+            defaults["selected_crypto_strategy_mode"] = selected_crypto
+    defaults["version"] = BOT_VERSION
+    defaults["build_id"] = BUILD_ID
+    defaults["server_started_at_utc"] = STARTED_AT
+    return jsonify(defaults)
+
+
+@app.get("/api/profit_trades")
+def api_profit_trades():
+    try:
+        days = int(request.args.get("days", "1"))
+    except Exception:
+        days = 1
+    if days not in {1, 3, 7}:
+        return jsonify({"ok": False, "error": "days_must_be_1_3_or_7"}), 400
+    now = time.time()
+    cached = _PROFIT_TRADES_CACHE.get(days)
+    if cached and now - cached[0] < 60:
+        return jsonify({"ok": True, **cached[1], "cached": True})
+    try:
+        import trading_bot
+        from trade_export import realized_winning_trades
+        cfg = trading_bot.load_cfg()
+        api = trading_bot.AlpacaRest(cfg)
+        data = realized_winning_trades(api, days, max_items=50)
+        _PROFIT_TRADES_CACHE[days] = (now, data)
+        return jsonify({"ok": True, **data, "cached": False})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": "profit_trades_failed", "detail": str(exc)[:500]}), 500
+
+
+@app.get("/api/export")
+def api_export():
+    try:
+        days = int(request.args.get("days", "7"))
+    except Exception:
+        days = 7
+    if days < 1 or days > 30:
+        return jsonify({"ok": False, "error": "days_must_be_1_to_30"}), 400
+    if not _EXPORT_LOCK.acquire(blocking=False):
+        response = jsonify({"ok": False, "error": "export_in_progress", "detail": "En analysefil bygges allerede. Vent til den er ferdig og prov igjen."})
+        response.status_code = 429
+        response.headers["Retry-After"] = "30"
+        return response
+    export_file = None
+    try:
+        from trade_export import build_ai_analysis_export_file
+        export_file, manifest = build_ai_analysis_export_file(days, STATE_DIR, BOT_VERSION)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        filename = f"TradingBot_AI_ANALYSE_{days}d_{stamp}UTC.zip"
+        resp = send_file(export_file, mimetype="application/zip", as_attachment=True, download_name=filename, max_age=0, conditional=False)
+        export_file.seek(0, 2)
+        resp.content_length = export_file.tell()
+        export_file.seek(0)
+        resp.call_on_close(export_file.close)
+        resp.headers["Cache-Control"] = "no-store, max-age=0"
+        resp.headers["X-TradingBot-Export-Version"] = str(manifest.get("export_schema") or "")
+        return resp
+    except Exception as exc:
+        if export_file is not None:
+            export_file.close()
+        return jsonify({"ok": False, "error": "export_failed", "detail": str(exc)[:500]}), 500
+    finally:
+        _EXPORT_LOCK.release()
+
+
+@app.post("/api/evidence-backup/start")
+def api_evidence_backup_start():
+    """Schedule an authenticated one-shot PAPER backup when bandwidth is safe."""
+    from evidence_backup_jobs import BACKUP_JOBS
+    status, http_code = BACKUP_JOBS.start(STATE_DIR)
+    response = jsonify(status)
+    response.status_code = http_code
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.get("/api/evidence-backup/status")
+def api_evidence_backup_status():
+    from evidence_backup_jobs import BACKUP_JOBS
+    response = jsonify(BACKUP_JOBS.status())
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.get("/api/evidence-backup")
+def api_evidence_backup():
+    """Download only a ready, verified export. Never build during HTTP GET."""
+    from evidence_backup_jobs import BACKUP_JOBS
+    job, error = BACKUP_JOBS.begin_download(STATE_DIR)
+    if error:
+        code = 403 if error == "paper_only_required" else 429 if "budget" in error else 503
+        response = jsonify({"ok": False, "error": error})
+        response.status_code = code
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    try:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        result = send_file(
+            job["handle"], as_attachment=True,
+            download_name=f"TradingBot_EVIDENCE_{stamp}UTC.zip",
+            mimetype="application/zip", conditional=False, max_age=0,
+        )
+        result.headers["Cache-Control"] = "no-store, private, max-age=0"
+        result.headers["X-Content-Type-Options"] = "nosniff"
+        result.headers["X-TradingBot-SHA256"] = job["zip_sha256"]
+        result.headers["X-TradingBot-Evidence-Format"] = "tradingbot-paper-evidence-v1"
+        result.content_length = job["size_bytes"]
+        result.call_on_close(lambda: BACKUP_JOBS.finish_download(job["job_id"]))
+        return result
+    except Exception:
+        BACKUP_JOBS.finish_download(job["job_id"])
+        return jsonify({"ok": False, "error": "backup_download_failed"}), 500
+
+
+@app.post("/api/test_buy")
+def api_test_buy():
+    body=request.get_json(force=True,silent=True) or {}; sym=(body.get("symbol") or "AAPL").strip().upper(); qty=float(body.get("qty") or 1)
+    c=safe_read_json(CONTROL_PATH,{}); c=c if isinstance(c,dict) else {}; c["test_buy"]={"symbol":sym,"qty":qty,"go":True}; safe_write_json(CONTROL_PATH,c)
+    return jsonify({"ok":True,"symbol":sym,"qty":qty})
+
+
+@app.post("/api/test_sell_all")
+def api_test_sell_all():
+    body=request.get_json(force=True,silent=True) or {}; sym=(body.get("symbol") or "AAPL").strip().upper()
+    c=safe_read_json(CONTROL_PATH,{}); c=c if isinstance(c,dict) else {}; c["test_sell_all"]={"symbol":sym,"go":True}; safe_write_json(CONTROL_PATH,c)
+    return jsonify({"ok":True,"symbol":sym})
+
+
+if __name__ == "__main__":
+    host = os.getenv("DASHBOARD_BIND", "127.0.0.1")
+    port = int(os.getenv("PORT", os.getenv("DASHBOARD_PORT", "5050")))
+    app.run(host=host, port=port, debug=False, threaded=True)
+
+
++data.current_price+
+      '\\nForslag: await postControl('/api/control',{armed:true,paused:false,kill:false})}
+async function stopTrading(){await postControl('/api/control',{armed:false,paused:true})}
+async function emergencyStop(){if(confirm('Aktivere NØDSTOPP? Nye handler blokkeres umiddelbart.'))await postControl('/api/control',{armed:false,paused:true,kill:true})}
+async function toggleBool(k){const r=await apiFetch('/api/control?ts='+Date.now());const c=await r.json();await postControl('/api/control',{[k]:!Boolean(c[k])})}
+async function setMarket(m){await postControl('/api/control',{market_mode:m})}
+let strategySaving=false, strategyChoiceDirty=false;
+async function setStrategy(){
+  const select=document.getElementById('strategySel'), chosen=select.value;
+  if(strategySaving||!['scalp','hype','trend','cross'].includes(chosen))return;
+  const cryptoChosen=chosen==='hype'?'scalp':chosen;
+  strategySaving=true;
+  try{
+    const response=await apiFetch('/api/control',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({strategy_mode:chosen,crypto_strategy_mode:cryptoChosen})
+    });
+    if(!response.ok)throw new Error('HTTP '+response.status);
+    const saved=await response.json();
+    if(saved.strategy_mode!==chosen||saved.crypto_strategy_mode!==cryptoChosen)
+      throw new Error('Valgt strategi ble ikke bekreftet av serveren');
+    strategyChoiceDirty=false;
+    await refresh(true);
+  }catch(error){
+    strategyChoiceDirty=true;
+    alert('Kunne ikke lagre strategien: '+String(error.message||error));
+  }finally{strategySaving=false}
+}
+async function setProfile(n){const p=n==='balanced'?{activity_profile:'balanced',intelligence_entry_score:67,intelligence_exit_score:42,fast_sma:8,slow_sma:24,hype_mom_n:5,min_mom_pct:.001,min_move_pct:.0003,min_slope_pct:.00025,cooldown_sec:90,take_profit_pct:.006,stop_loss_pct:.004,trailing_activate_pct:.003,trailing_stop_pct:.003,max_hold_sec:2700,refresh_bars_every_sec:15,crypto_crypto_cooldown_sec:60,crypto_take_profit_pct:.012,crypto_stop_loss_pct:.007,crypto_trailing_activate_pct:.007,crypto_trailing_stop_pct:.0045,crypto_max_hold_sec:3600,crypto_max_spread_bps:15,crypto_taker_fee_bps:25,crypto_min_net_edge_bps:30,crypto_entry_confirm_bars:2}:{activity_profile:'active',intelligence_entry_score:60,intelligence_exit_score:38,fast_sma:6,slow_sma:18,hype_mom_n:4,min_mom_pct:.0006,min_move_pct:.00015,min_slope_pct:.00015,cooldown_sec:45,take_profit_pct:.004,stop_loss_pct:.003,trailing_activate_pct:.002,trailing_stop_pct:.0025,max_hold_sec:1800,refresh_bars_every_sec:10,crypto_crypto_cooldown_sec:30,crypto_take_profit_pct:.01,crypto_stop_loss_pct:.006,crypto_trailing_activate_pct:.006,crypto_trailing_stop_pct:.004,crypto_max_hold_sec:2700,crypto_max_spread_bps:25,crypto_taker_fee_bps:25,crypto_min_net_edge_bps:20,crypto_entry_confirm_bars:2};await postControl('/api/control',p)}
+async function testBuy(){await postControl('/api/test_buy',{symbol:document.getElementById('buySym').value.trim().toUpperCase(),qty:Number(document.getElementById('buyQty').value||1)})}
+async function testSellAll(){await postControl('/api/test_sell_all',{symbol:document.getElementById('sellSym').value.trim().toUpperCase()})}
+let hudLatestStatus=null;
+function hudKey(event,target){if(event.key==='Enter'||event.key===' '){event.preventDefault();hudNavigate(target)}}
+function hudClose(){document.getElementById('hudQuickPanel').hidden=true}
+function hudNavigate(target){
+  if(target==='home'){hudClose();window.scrollTo({top:0,behavior:'smooth'});return}
+  if(target==='results'){hudClose();document.getElementById('profit_row_7')?.scrollIntoView({behavior:'smooth',block:'center'});return}
+  if(target==='positions'){hudClose();document.querySelector('.tableCard')?.scrollIntoView({behavior:'smooth',block:'start'});return}
+  if(target==='settings'){hudClose();const d=document.querySelector('.controlCard details.utility');if(d)d.open=true;document.querySelector('.controlCard')?.scrollIntoView({behavior:'smooth',block:'start'});return}
+  if(target==='reports'){hudClose();document.querySelector('.exportBox')?.scrollIntoView({behavior:'smooth',block:'center'});document.getElementById('exportDays')?.focus();return}
+  if(target==='market'||target==='learning'){
+    const panel=document.getElementById('hudQuickPanel');
+    panel.hidden=false;
+    document.getElementById('hudQuickTitle').textContent=target==='market'?'Markedsdata':'AI-læring';
+    const st=hudLatestStatus||{};
+    const rows=[];
+    const add=(label,value)=>rows.push('<tr><td>'+safeHtml(label)+'</td><td>'+safeHtml(value??'-')+'</td></tr>');
+    if(target==='market'){
+      const health=st.intelligence?.source_health||{};
+      add('Aksjefeed',st.market_data?.stock_feed);
+      add('Kryptofeed',health.crypto_stream);
+      add('Aksjestrøm',health.stock_stream);
+      add('Nyheter',health.alpaca_news);
+      add('GDELT',health.gdelt);
+      add('SEC',health.sec);
+      const symbols=Object.values(st.symbols||{}).filter(x=>x.market==='CRYPTO');
+      add('Krypto: gamle kurser',symbols.filter(x=>String(x.action||'').startsWith('QUOTE_STALE')).length+' / '+symbols.length);
+      add('Status',st.engine_state);
+    }else{
+      const diag=st.entry_diagnostics||{};
+      const shadow=st.adaptive_edge?.shadow?.models||{};
+      add('Positive signaler',diag.positive_signals??0);
+      for(const [reason,n] of Object.entries(diag.blocker_counts||{}))add('Blokkert: '+reason,n);
+      for(const [model,stats] of Object.entries(shadow)){
+        const label=model.replaceAll('_',' ');
+        add(label,'Målt: '+(stats.samples??0)+' • Treff: '+(stats.win_rate_pct??'-')+'% • Avkastning: '+(stats.avg_return_bps??'-')+' bp');
+        if(stats.outcome_coverage_pct!=null)add(label+' datadekning',stats.outcome_coverage_pct+'%');
+      }
+      add('Læringsdatabase',st.learning_health?.last_error||'Ingen rapportert feil');
+    }
+    document.getElementById('hudQuickBody').innerHTML='<table>'+rows.join('')+'</table>';
+  }
+}
+document.addEventListener('keydown',event=>{if(event.key==='Escape')hudClose()});
+function downloadAnalysis(){const el=document.getElementById('exportDays');let d=parseInt(el?.value||'7',10);if(!Number.isFinite(d))d=7;d=Math.max(1,Math.min(30,d));window.location.href='/api/export?days='+encodeURIComponent(d)}
+function setSymbolFilter(f,btn){symbolFilter=f;document.querySelectorAll('.filterBtn').forEach(x=>x.classList.remove('active'));if(btn)btn.classList.add('active');filterSymbols()}
+function filterSymbols(){const q=(document.getElementById('symbolSearch')?.value||'').trim().toUpperCase();document.querySelectorAll('#tblSymbols tr').forEach(tr=>{const market=(tr.dataset.market||'').toLowerCase(),pos=Number(tr.dataset.pos||0);const matchFilter=symbolFilter==='all'||(symbolFilter==='stocks'&&market==='stock')||(symbolFilter==='crypto'&&market==='crypto')||(symbolFilter==='active'&&pos!==0);const matchQ=!q||(tr.dataset.symbol||'').includes(q);tr.style.display=matchFilter&&matchQ?'':'none'})}
+function renderSymbols(s){const b=document.getElementById('tblSymbols');b.innerHTML='';Object.keys(s||{}).sort((a,c)=>(s[a]?.market==='CRYPTO'?0:1)-(s[c]?.market==='CRYPTO'?0:1)||a.localeCompare(c)).forEach(sym=>{const x=s[sym]||{},sig=x.signal===1?'BUY':x.signal===-1?'SELL':(x.signal??'0');const tr=document.createElement('tr');tr.dataset.market=String(x.market||'');tr.dataset.pos=String(x.pos_qty??0);tr.dataset.symbol=String(sym).toUpperCase();const edge=x.debug?.p_tp_before_sl_pct!=null?('TP '+x.debug.p_tp_before_sl_pct+'% / EV '+(x.debug.ev_bps>=0?'+':'')+x.debug.ev_bps+'bp'):(x.debug?.prob_up_pct!=null?('P '+x.debug.prob_up_pct+'% / EV '+(x.debug.ev_bps>=0?'+':'')+x.debug.ev_bps+'bp'):'-');const marketBadge='<span class="marketBadge '+String(x.market||'').toLowerCase()+'">'+safeHtml(x.market||'-')+'</span>';const action=String(x.action||'NONE');const actionClass=/BUY|ENTRY|SUBMIT|FILLED/.test(action)?'pos':/SELL|EXIT|STOP|LOSS|ERROR|RECONCILE/.test(action)?'neg':'';tr.innerHTML=`<td>${marketBadge}</td><td><b class="symName">${safeHtml(sym)}</b></td><td>${fmt(x.price)}</td><td>${fmt(x.bid)}</td><td>${fmt(x.ask)}</td><td>${x.debug?.spread_bps??'-'}</td><td class="edgeCell">${edge}</td><td><b>${x.debug?.intel_score??'-'}</b></td><td>${sig}</td><td>${x.pos_qty??0}</td><td>${fmt(x.avg_entry)}</td><td class="${actionClass}">${safeHtml(action)}</td><td class="neg">${safeHtml(x.error||'')}</td>`;b.appendChild(tr)});filterSymbols()}
+function renderOrders(o){const b=document.getElementById('tblOrders');b.innerHTML='';(o||[]).forEach(x=>{const tr=document.createElement('tr'),t=String(x.filled_at||x.submitted_at||x.created_at||'').replace('T',' ').replace('Z','');tr.innerHTML=`<td class="mono small">${t||'-'}</td><td><b>${x.symbol||''}</b></td><td>${x.side||''}</td><td>${x.qty||x.notional||''}</td><td>${x.type||''}</td><td>${x.status||''}</td><td class="mono small">${x.id||''}</td>`;b.appendChild(tr)})}
+function setKpi(id,value,kind=''){const el=document.getElementById(id);if(!el)return;el.textContent=value??'-';el.className='kpiValue '+kind}
+let dashboardRefreshMs=10000;
+function updateKpis(s,running,cr,guardBad,guardPending){const p=s.profit_summary||{};const cls=v=>Number(v)>0?'pos':Number(v)<0?'neg':'';setKpi('kpi_today',money(p.today_usd??s.day_pnl_usd),cls(p.today_usd??s.day_pnl_usd));setKpi('kpi_3d',p.days3_usd==null?'-':money(p.days3_usd),cls(p.days3_usd));setKpi('kpi_7d',p.days7_usd==null?'-':money(p.days7_usd),cls(p.days7_usd));const _unmanaged=Object.values((s.risk_supervision||{}).unmanaged_positions||{});const _risky=_unmanaged.some(x=>x?.protection_status!=='STOP_ORDER_PRESENT')||(s.risk_supervision||{}).broker_data_fresh===false;setKpi('kpi_guard',_risky?'UKJENT':guardBad?'AVSTEM':_unmanaged.length?'MANUELL':guardPending?'EXIT':'OK',_risky||guardBad?'neg':_unmanaged.length?'warn':'pos');setKpi('kpi_cloud',cr.render?(cr.always_on_expected?'24/7 OK':'FREE'):'LOKAL',cr.always_on_expected?'pos':cr.render?'warn':'');const ru=s.render_usage||{};const rup=String(ru.policy||'UNMETERED').toUpperCase();const usage=ru.percent==null?'IKKE KOBLET':Number(ru.used_gb||0).toFixed(2)+'/'+Number(ru.cap_gb||5).toFixed(0)+' GB';setKpi('kpi_usage',usage,(rup==='HARD'||rup==='OVER')?'neg':rup==='NORMAL'?'pos':'');dashboardRefreshMs=(rup==='HARD'||rup==='OVER')?120000:rup==='STRONG'?90000:rup==='SAVE'?75000:rup==='WARN'?60000:10000;setKpi('kpi_alpaca',s.auth_ok===true?'Tilkoblet':s.auth_ok===false?'Feil':'Venter',s.auth_ok===true?'pos':s.auth_ok===false?'neg':'');const sx=s.saxo_sim||{};const sxState=String(sx.state||'DISABLED');const saxoButton=document.getElementById('saxoConnectLink');if(saxoButton){const connected=sx.account_connected===true&&sx.oauth_refresh_ready===true&&sx.token_persisted===true;saxoButton.style.display=connected?'none':'inline-block';saxoButton.textContent=sx.account_connected===true?'Saxo SIM er tilkoblet':'Koble til Saxo SIM';}setKpi('kpi_saxo',sxState==='RUNNING_SIM'?'SIM AKTIV':sxState==='DISABLED'?'AV':sxState==='WAITING_FOR_SIM_TOKEN'?'VENTER TOKEN':sxState,sxState==='RUNNING_SIM'?'pos':sxState==='ERROR'?'neg':'');document.getElementById('saxoDetails').textContent='State: '+sxState+' • konto: '+(sx.account_connected===true?'tilkoblet':'ikke bekreftet')+'\nSymboler: '+Number(sx.symbols_resolved||0)+'/'+Number(sx.symbols_requested||0)+' • posisjoner: '+Number(sx.positions||0)+'\nTrafikk: '+Number(sx.traffic_day_mb||0).toFixed(2)+' MB i dag / '+Number(sx.traffic_month_mb||0).toFixed(2)+' MB måned\nSiste poll: '+(sx.last_successful_poll||'ingen')+'\n'+(sx.error||sx.note||'');const raw=String(s.last_update||'');let t='-';try{const d=new Date(raw);if(!Number.isNaN(d.getTime()))t=d.toLocaleTimeString('no-NO',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}catch(e){}setKpi('kpi_updated',t);const chip=document.getElementById('headerRunChip');if(chip){chip.textContent=running?'TRADING AKTIV':'TRADING PAUSET';chip.className='runChip '+(running?'on':'off')}}
+async function refresh(force=false){try{const r=await apiFetch('/api/status?ts='+Date.now()+(force?'&force=1':''));const s=await r.json();hudLatestStatus=s;const live=Boolean(s.auth_ok)&&String(s.engine_state||'').toUpperCase()==='RUNNING';document.getElementById('liveDot').className='dot '+(live?'ok':'bad');document.getElementById('liveText').textContent=live?'ONLINE':'IKKE KLAR';const running=Boolean(s.armed)&&!Boolean(s.paused)&&!Boolean(s.kill);document.getElementById('st_engine').textContent=s.engine_state||'-';document.getElementById('st_version').textContent=s.version||'-';document.getElementById('st_auth').innerHTML=pill(s.auth_ok);document.getElementById('st_running').innerHTML=pill(running);const cr=s.cloud_runtime||{};const cloudEl=document.getElementById('st_cloud');if(cr.render){cloudEl.innerHTML=cr.always_on_expected?'<span class="pill good">24/7 OK</span>':'<span class="pill bad">RENDER FREE</span>'}else{cloudEl.innerHTML='<span class="pill neutral">LOKAL</span>'}const eg=s.execution_guard||{};const riskSupervision=s.risk_supervision||{};const unmanaged=riskSupervision.unmanaged_positions||{};const unmanagedSymbols=Object.keys(unmanaged);const unverified=unmanagedSymbols.filter(x=>unmanaged[x]?.protection_status!=='STOP_ORDER_PRESENT');const guardBad=Number(eg.reconcile_required||0)>0||unverified.length>0||riskSupervision.broker_data_fresh===false;const guardPending=Number(eg.active_exits||0)>0;document.getElementById('st_guard').innerHTML=guardBad?'<span class="pill bad">'+(unverified.length?'UBESKYTTET/UKJENT '+unverified.length:riskSupervision.broker_data_fresh===false?'MEGLERDATA UKJENT':'AVSTEM '+Number(eg.reconcile_required||0))+'</span>':unmanagedSymbols.length?'<span class="pill neutral">UKJENT POSISJON '+unmanagedSymbols.length+'</span>':guardPending?'<span class="pill neutral">EXIT '+Number(eg.active_exits||0)+'</span>':'<span class="pill good">OK</span>';updateKpis(s,running,cr,guardBad,guardPending);document.getElementById('st_market').textContent=(s.market_mode||'auto').toUpperCase();document.getElementById('st_session').textContent=s.stock_session||'-';document.getElementById('st_crypto').innerHTML=pill(s.crypto_24_7);document.getElementById('st_paper').innerHTML=pill(s.paper);const currentStrategy=(s.market_mode==='crypto'?(s.crypto_strategy_mode||s.strategy_mode):s.strategy_mode)||'-';
+const selectedStrategy=(s.market_mode==='crypto'?(s.selected_crypto_strategy_mode||s.selected_strategy_mode):(s.selected_strategy_mode||s.strategy_mode))||'-';
+document.getElementById('st_strategy').textContent=currentStrategy===selectedStrategy?currentStrategy:currentStrategy+' (bytter til '+selectedStrategy+')';const ii=s.intelligence||{};document.getElementById('st_intel').innerHTML=pill(ii.enabled!==false);const pe=s.profit_engine||{};document.getElementById('st_edge').innerHTML=pill(pe.enabled!==false);const ah=s.audit_health||{},lh=s.learning_health||{},bh=s.broker_history||{},sb=s.storage_backup||{};const storageLabel=sb.configured?(sb.last_error?'backupfeil':sb.last_success_utc?'databasebackup hver 5. min':'backup venter'):ah.persistent===false?'midlertidig lagring':'lokal lagring';document.getElementById('auditSummary').textContent='Historikk: '+((ah.last_error||lh.last_error)?'lagringsfeil':storageLabel)+' • Alpaca '+(bh.stream||'starter')+' • '+(bh.sync_complete?'historikk hentet':'historikk venter');const ae=s.adaptive_edge||{},md=s.market_data||{};const sh=ae.shadow?.models||{};const shN=Object.values(sh).reduce((a,x)=>a+Number(x?.samples||0),0);document.getElementById('st_adaptive').textContent=`${String(md.stock_feed||'iex').toUpperCase()} • router ${ae.router?'ON':'OFF'} • univers ${Number(ae.active_symbols||0)}/${Number(ae.total_symbols||0)} • shadow ${shN}`;document.getElementById('st_regime').textContent=(ii.regime_label||'-')+' '+(ii.regime_score??'');document.getElementById('st_risk').textContent=(ii.global_risk??'-')+'/100';document.getElementById('st_news').textContent=ii.last_headline||'-';document.getElementById('st_pnl').textContent=fmt(s.day_pnl_usd);renderProfit(s.profit_summary||{today_usd:s.day_pnl_usd});document.getElementById('st_last').textContent=s.last_update||'';document.getElementById('st_notes').textContent=s.notes||'';if(!strategySaving&&!strategyChoiceDirty){
+  const select=document.getElementById('strategySel');
+  const saved=s.selected_strategy_mode||s.strategy_mode||'scalp';
+  if(['scalp','hype','trend','cross'].includes(saved))select.value=saved;
+}document.getElementById('paperTests').style.display=s.paper===false?'none':'block';['auto','stocks','crypto'].forEach(m=>document.getElementById('m_'+m).classList.toggle('active',(s.market_mode||'auto')===m));const ab=document.getElementById('authBanner');if(unverified.length){ab.className='banner bad';ab.textContent='ADVARSEL: '+unverified.map(sym=>sym+' ('+String(unmanaged[sym]?.protection_status||'ukjent')+')').join(', ')+'. Posisjonen styres ikke automatisk av boten. Sjekk Alpaca PAPER; ingen ordre er lagt inn.';}else if(unmanagedSymbols.length){ab.className='banner warn';ab.textContent='Ukjent aksjeposisjon: '+unmanagedSymbols.join(', ')+'. Synlig stopordre er registrert, men boten forvalter den ikke.';}else if(s.auth_ok===false){ab.className='banner bad';ab.textContent='Alpaca avviser API-nøklene.'}else if(live&&cr.render&&cr.always_on_expected===false){ab.className='banner warn';ab.textContent='Trading kjører, men Render FREE kan sovne når dashboardet lukkes. Oppgrader Compute til 0.5c-512mb for ekte 24/7.'}else if(live){ab.className='banner good';ab.textContent=running?'Motor ONLINE – trading er STARTET.':'Motor ONLINE – trading er STOPPET/PAUSET.'}else{ab.className='banner warn';ab.textContent='Motoren starter eller restarter…'}renderSymbols(s.symbols||{});renderOrders(s.orders||[]);const lo=(s.orders||[])[0]?.id||'-';document.getElementById('lastOrderId').textContent=lo}catch(e){document.getElementById('liveDot').className='dot bad';document.getElementById('liveText').textContent='OFFLINE'}}
+async function refreshLoop(){await refresh(false);setTimeout(refreshLoop,dashboardRefreshMs)}refreshLoop();
+</script></body></html>\n"""
+
+
+@app.get("/")
+def home():
+    # Dashboard HTML contains modern JavaScript/CSS braces. Serving it directly
+    # avoids Jinja interpreting client-side syntax while still substituting the
+    # two server values the page needs. Login remains a normal Jinja template.
+    page = HTML.replace("{{ bot_version }}", str(BOT_VERSION)).replace("{{ build_id }}", str(BUILD_ID))
+    return Response(page, mimetype="text/html")
+
+
+@app.get("/manifest.webmanifest")
+def manifest():
+    return app.send_static_file("manifest.webmanifest")
+
+
+@app.get("/service-worker.js")
+def service_worker():
+    resp = app.send_static_file("sw.js")
+    resp.headers["Cache-Control"] = "no-cache"
+    resp.headers["Service-Worker-Allowed"] = "/"
+    return resp
+
+
+@app.get("/healthz")
+def healthz():
+    st = safe_read_json(STATUS_PATH, {})
+    last = st.get("last_update") if isinstance(st, dict) else None
+    age = None
+    if last:
+        try:
+            age = max(0.0, time.time() - datetime.fromisoformat(str(last).replace("Z", "+00:00")).timestamp())
+        except Exception:
+            pass
+    engine = st.get("engine_state") if isinstance(st, dict) else None
+    ok = engine not in {"AUTH_ERROR", "CRASHED"}
+    return jsonify({"ok": bool(ok), "engine_state": engine or "STARTING", "status_age_sec": age, "version": BOT_VERSION, "cloud_runtime": st.get("cloud_runtime", {}), "broker_history": st.get("broker_history", {}), "storage_backup": st.get("storage_backup", {})}), (200 if ok else 503)
+
+
+@app.post("/api/aep-protection/preview")
+def api_aep_protection_preview():
+    """Read fresh Alpaca PAPER data; never place an order in this endpoint."""
+    from paper_aep_protection import AepProtectionError, fresh_aep_unprotected
+    try:
+        from trading_bot import AlpacaRest, load_cfg
+        info = fresh_aep_unprotected(AlpacaRest(load_cfg()))
+    except AepProtectionError as exc:
+        return jsonify({"ok": False, "error": exc.message}), exc.code
+    except Exception:
+        return jsonify({"ok": False, "error": "Kunne ikke bekrefte fersk Alpaca PAPER-status"}), 503
+    nonce = secrets.token_urlsafe(22)
+    session["aep_protection_preview"] = {
+        "nonce": nonce, "qty": info["qty"],
+        "current_price": info["current_price"], "expires": time.time() + 120,
+    }
+    return jsonify({"ok": True, **info, "preview_nonce": nonce,
+                    "expires_in_seconds": 120})
+
+
+@app.post("/api/aep-protection/confirm")
+def api_aep_protection_confirm():
+    """Only an explicit two-stage dashboard action can send one PAPER stop."""
+    from paper_aep_protection import AepProtectionError, submit_approved_aep_stop
+    origin = request.headers.get("Origin", "")
+    if origin and origin.rstrip("/") != request.host_url.rstrip("/"):
+        return jsonify({"ok": False, "error": "Ugyldig opprinnelse"}), 403
+    payload = request.get_json(silent=True) or {}
+    preview = session.pop("aep_protection_preview", None)
+    if not isinstance(preview, dict) or not secrets.compare_digest(
+        str(payload.get("preview_nonce") or ""), str(preview.get("nonce") or "not-available")
+    ):
+        return jsonify({"ok": False, "error": "Hent ny forhåndsvisning før godkjenning"}), 409
+    if payload.get("confirmation") != "BEKREFT AEP PAPER STOP":
+        return jsonify({"ok": False, "error": "Ordren må bekreftes eksplisitt"}), 409
+    try:
+        from trading_bot import AlpacaRest, load_cfg
+        result = submit_approved_aep_stop(
+            AlpacaRest(load_cfg()), STATE_DIR, preview=preview,
+            stop_price=payload.get("stop_price"),
+        )
+    except AepProtectionError as exc:
+        return jsonify({"ok": False, "error": exc.message}), exc.code
+    except Exception:
+        return jsonify({"ok": False, "error": "Ordrestatus ukjent. Sjekk Alpaca PAPER."}), 503
+    return jsonify(result)
+
+
+@app.get("/api/control")
+def api_control_get():
+    return jsonify(safe_read_json(CONTROL_PATH, {}))
+
+
+@app.post("/api/control")
+def api_control_post():
+    patch = request.get_json(force=True, silent=True) or {}
+    allowed = {
+        "paused","kill","armed","extended_hours","test_mode","strategy_mode","crypto_strategy_mode","market_mode",
+        "fast_sma","slow_sma","hype_mom_n","min_mom_pct","min_move_pct","min_slope_pct","cooldown_sec",
+        "take_profit_pct","stop_loss_pct","trailing_activate_pct","trailing_stop_pct","max_hold_sec","refresh_bars_every_sec",
+        "crypto_cooldown_sec","crypto_take_profit_pct","crypto_stop_loss_pct","crypto_trailing_activate_pct","crypto_trailing_stop_pct",
+        "crypto_max_hold_sec","crypto_max_spread_bps","crypto_taker_fee_bps","crypto_min_net_edge_bps","crypto_entry_confirm_bars",
+        "activity_profile","intelligence_enabled","intelligence_entry_score","intelligence_exit_score",
+        "soft_exit_min_hold_sec","soft_exit_confirm_sec","entry_require_signal_reset","stock_entry_cutoff_min","stock_flatten_before_close_min","stock_loss_streak_window_sec","stock_loss_streak_count","stock_loss_streak_cooldown_sec","decision_log_interval_sec",
+        "adaptive_router_enabled","dynamic_universe_enabled","dynamic_universe_top_n","sector_confirmation_enabled","champion_challenger_enabled","shadow_log_interval_sec"
+    }
+    clean = {k:v for k,v in patch.items() if k in allowed}
+    return jsonify(patch_control(clean))
+
+
+@app.get("/api/status")
+def api_status():
+    st = safe_read_json(STATUS_PATH, {})
+    defaults = {"version":BOT_VERSION,"paper":True,"auth_ok":None,"engine_state":"STARTING","armed":False,"paused":True,"kill":False,"extended_hours":False,"auto_extended":False,"market_mode":"auto","stock_session":"CLOSED","crypto_24_7":True,"test_mode":False,"strategy_mode":"scalp","last_update":"","day_pnl_usd":0,"profit_summary":{"today_usd":0,"today_pct":0,"days3_usd":None,"days3_pct":None,"days7_usd":None,"days7_pct":None},"execution_guard":{"enabled":True,"active_exits":0,"blocked_entries":0,"reconcile_required":0},"adaptive_edge":{"enabled":True,"router":True,"active_symbols":0,"total_symbols":0},"market_data":{"stock_feed":"iex"},"notes":"","symbols":{},"orders":[]}
+    if isinstance(st, dict): defaults.update(st)
+    usage = safe_read_json(STATE_DIR / "render_usage.json", {})
+    if isinstance(usage, dict) and usage:
+        current = defaults.get("render_usage") if isinstance(defaults.get("render_usage"), dict) else {}
+        defaults["render_usage"] = {**current, **usage}
+    saxo = safe_read_json(STATE_DIR / "saxo_sim_status.json", {})
+    if isinstance(saxo, dict) and saxo:
+        defaults["saxo_sim"] = saxo
+    # Under bandwidth savings, the motor status can be minutes behind the
+    # preference saved in control.json. Keep the selector on the saved value.
+    saved_control = safe_read_json(CONTROL_PATH, {})
+    if isinstance(saved_control, dict):
+        selected = saved_control.get("strategy_mode")
+        selected_crypto = saved_control.get("crypto_strategy_mode")
+        if selected in {"scalp", "hype", "trend", "cross"}:
+            defaults["selected_strategy_mode"] = selected
+        if selected_crypto in {"scalp", "trend", "cross"}:
+            defaults["selected_crypto_strategy_mode"] = selected_crypto
+    defaults["version"] = BOT_VERSION
+    defaults["build_id"] = BUILD_ID
+    defaults["server_started_at_utc"] = STARTED_AT
+    return jsonify(defaults)
+
+
+@app.get("/api/profit_trades")
+def api_profit_trades():
+    try:
+        days = int(request.args.get("days", "1"))
+    except Exception:
+        days = 1
+    if days not in {1, 3, 7}:
+        return jsonify({"ok": False, "error": "days_must_be_1_3_or_7"}), 400
+    now = time.time()
+    cached = _PROFIT_TRADES_CACHE.get(days)
+    if cached and now - cached[0] < 60:
+        return jsonify({"ok": True, **cached[1], "cached": True})
+    try:
+        import trading_bot
+        from trade_export import realized_winning_trades
+        cfg = trading_bot.load_cfg()
+        api = trading_bot.AlpacaRest(cfg)
+        data = realized_winning_trades(api, days, max_items=50)
+        _PROFIT_TRADES_CACHE[days] = (now, data)
+        return jsonify({"ok": True, **data, "cached": False})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": "profit_trades_failed", "detail": str(exc)[:500]}), 500
+
+
+@app.get("/api/export")
+def api_export():
+    try:
+        days = int(request.args.get("days", "7"))
+    except Exception:
+        days = 7
+    if days < 1 or days > 30:
+        return jsonify({"ok": False, "error": "days_must_be_1_to_30"}), 400
+    if not _EXPORT_LOCK.acquire(blocking=False):
+        response = jsonify({"ok": False, "error": "export_in_progress", "detail": "En analysefil bygges allerede. Vent til den er ferdig og prov igjen."})
+        response.status_code = 429
+        response.headers["Retry-After"] = "30"
+        return response
+    export_file = None
+    try:
+        from trade_export import build_ai_analysis_export_file
+        export_file, manifest = build_ai_analysis_export_file(days, STATE_DIR, BOT_VERSION)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        filename = f"TradingBot_AI_ANALYSE_{days}d_{stamp}UTC.zip"
+        resp = send_file(export_file, mimetype="application/zip", as_attachment=True, download_name=filename, max_age=0, conditional=False)
+        export_file.seek(0, 2)
+        resp.content_length = export_file.tell()
+        export_file.seek(0)
+        resp.call_on_close(export_file.close)
+        resp.headers["Cache-Control"] = "no-store, max-age=0"
+        resp.headers["X-TradingBot-Export-Version"] = str(manifest.get("export_schema") or "")
+        return resp
+    except Exception as exc:
+        if export_file is not None:
+            export_file.close()
+        return jsonify({"ok": False, "error": "export_failed", "detail": str(exc)[:500]}), 500
+    finally:
+        _EXPORT_LOCK.release()
+
+
+@app.post("/api/evidence-backup/start")
+def api_evidence_backup_start():
+    """Schedule an authenticated one-shot PAPER backup when bandwidth is safe."""
+    from evidence_backup_jobs import BACKUP_JOBS
+    status, http_code = BACKUP_JOBS.start(STATE_DIR)
+    response = jsonify(status)
+    response.status_code = http_code
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.get("/api/evidence-backup/status")
+def api_evidence_backup_status():
+    from evidence_backup_jobs import BACKUP_JOBS
+    response = jsonify(BACKUP_JOBS.status())
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.get("/api/evidence-backup")
+def api_evidence_backup():
+    """Download only a ready, verified export. Never build during HTTP GET."""
+    from evidence_backup_jobs import BACKUP_JOBS
+    job, error = BACKUP_JOBS.begin_download(STATE_DIR)
+    if error:
+        code = 403 if error == "paper_only_required" else 429 if "budget" in error else 503
+        response = jsonify({"ok": False, "error": error})
+        response.status_code = code
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    try:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        result = send_file(
+            job["handle"], as_attachment=True,
+            download_name=f"TradingBot_EVIDENCE_{stamp}UTC.zip",
+            mimetype="application/zip", conditional=False, max_age=0,
+        )
+        result.headers["Cache-Control"] = "no-store, private, max-age=0"
+        result.headers["X-Content-Type-Options"] = "nosniff"
+        result.headers["X-TradingBot-SHA256"] = job["zip_sha256"]
+        result.headers["X-TradingBot-Evidence-Format"] = "tradingbot-paper-evidence-v1"
+        result.content_length = job["size_bytes"]
+        result.call_on_close(lambda: BACKUP_JOBS.finish_download(job["job_id"]))
+        return result
+    except Exception:
+        BACKUP_JOBS.finish_download(job["job_id"])
+        return jsonify({"ok": False, "error": "backup_download_failed"}), 500
+
+
+@app.post("/api/test_buy")
+def api_test_buy():
+    body=request.get_json(force=True,silent=True) or {}; sym=(body.get("symbol") or "AAPL").strip().upper(); qty=float(body.get("qty") or 1)
+    c=safe_read_json(CONTROL_PATH,{}); c=c if isinstance(c,dict) else {}; c["test_buy"]={"symbol":sym,"qty":qty,"go":True}; safe_write_json(CONTROL_PATH,c)
+    return jsonify({"ok":True,"symbol":sym,"qty":qty})
+
+
+@app.post("/api/test_sell_all")
+def api_test_sell_all():
+    body=request.get_json(force=True,silent=True) or {}; sym=(body.get("symbol") or "AAPL").strip().upper()
+    c=safe_read_json(CONTROL_PATH,{}); c=c if isinstance(c,dict) else {}; c["test_sell_all"]={"symbol":sym,"go":True}; safe_write_json(CONTROL_PATH,c)
+    return jsonify({"ok":True,"symbol":sym})
+
+
+if __name__ == "__main__":
+    host = os.getenv("DASHBOARD_BIND", "127.0.0.1")
+    port = int(os.getenv("PORT", os.getenv("DASHBOARD_PORT", "5050")))
+    app.run(host=host, port=port, debug=False, threaded=True)
+
+
++data.suggested_stop_price+' (omtrent 5 % under markedspris).';
+    document.getElementById('aepStopPrice').value=data.suggested_stop_price;
+    document.getElementById('aepProtectReview').style.display='block';
+    out.textContent='Ingen ordre sendt. Se over stoppkursen og bekreft om du ønsker den.';
+  }catch(error){
+    out.textContent='Ingen ordre sendt: '+String(error.message||error);
+  }
+}
+async function confirmAepProtection(){
+  if(!aepPreview||aepSubmitBusy)return;
+  const stop=document.getElementById('aepStopPrice').value;
+  const prompt='Bekreft én ALPACA PAPER stopordre: SELG '+aepPreview.qty+
+    ' AEP-aksjer ved stoppkurs await postControl('/api/control',{armed:true,paused:false,kill:false})}
+async function stopTrading(){await postControl('/api/control',{armed:false,paused:true})}
+async function emergencyStop(){if(confirm('Aktivere NØDSTOPP? Nye handler blokkeres umiddelbart.'))await postControl('/api/control',{armed:false,paused:true,kill:true})}
+async function toggleBool(k){const r=await apiFetch('/api/control?ts='+Date.now());const c=await r.json();await postControl('/api/control',{[k]:!Boolean(c[k])})}
+async function setMarket(m){await postControl('/api/control',{market_mode:m})}
+let strategySaving=false, strategyChoiceDirty=false;
+async function setStrategy(){
+  const select=document.getElementById('strategySel'), chosen=select.value;
+  if(strategySaving||!['scalp','hype','trend','cross'].includes(chosen))return;
+  const cryptoChosen=chosen==='hype'?'scalp':chosen;
+  strategySaving=true;
+  try{
+    const response=await apiFetch('/api/control',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({strategy_mode:chosen,crypto_strategy_mode:cryptoChosen})
+    });
+    if(!response.ok)throw new Error('HTTP '+response.status);
+    const saved=await response.json();
+    if(saved.strategy_mode!==chosen||saved.crypto_strategy_mode!==cryptoChosen)
+      throw new Error('Valgt strategi ble ikke bekreftet av serveren');
+    strategyChoiceDirty=false;
+    await refresh(true);
+  }catch(error){
+    strategyChoiceDirty=true;
+    alert('Kunne ikke lagre strategien: '+String(error.message||error));
+  }finally{strategySaving=false}
+}
+async function setProfile(n){const p=n==='balanced'?{activity_profile:'balanced',intelligence_entry_score:67,intelligence_exit_score:42,fast_sma:8,slow_sma:24,hype_mom_n:5,min_mom_pct:.001,min_move_pct:.0003,min_slope_pct:.00025,cooldown_sec:90,take_profit_pct:.006,stop_loss_pct:.004,trailing_activate_pct:.003,trailing_stop_pct:.003,max_hold_sec:2700,refresh_bars_every_sec:15,crypto_crypto_cooldown_sec:60,crypto_take_profit_pct:.012,crypto_stop_loss_pct:.007,crypto_trailing_activate_pct:.007,crypto_trailing_stop_pct:.0045,crypto_max_hold_sec:3600,crypto_max_spread_bps:15,crypto_taker_fee_bps:25,crypto_min_net_edge_bps:30,crypto_entry_confirm_bars:2}:{activity_profile:'active',intelligence_entry_score:60,intelligence_exit_score:38,fast_sma:6,slow_sma:18,hype_mom_n:4,min_mom_pct:.0006,min_move_pct:.00015,min_slope_pct:.00015,cooldown_sec:45,take_profit_pct:.004,stop_loss_pct:.003,trailing_activate_pct:.002,trailing_stop_pct:.0025,max_hold_sec:1800,refresh_bars_every_sec:10,crypto_crypto_cooldown_sec:30,crypto_take_profit_pct:.01,crypto_stop_loss_pct:.006,crypto_trailing_activate_pct:.006,crypto_trailing_stop_pct:.004,crypto_max_hold_sec:2700,crypto_max_spread_bps:25,crypto_taker_fee_bps:25,crypto_min_net_edge_bps:20,crypto_entry_confirm_bars:2};await postControl('/api/control',p)}
+async function testBuy(){await postControl('/api/test_buy',{symbol:document.getElementById('buySym').value.trim().toUpperCase(),qty:Number(document.getElementById('buyQty').value||1)})}
+async function testSellAll(){await postControl('/api/test_sell_all',{symbol:document.getElementById('sellSym').value.trim().toUpperCase()})}
+let hudLatestStatus=null;
+function hudKey(event,target){if(event.key==='Enter'||event.key===' '){event.preventDefault();hudNavigate(target)}}
+function hudClose(){document.getElementById('hudQuickPanel').hidden=true}
+function hudNavigate(target){
+  if(target==='home'){hudClose();window.scrollTo({top:0,behavior:'smooth'});return}
+  if(target==='results'){hudClose();document.getElementById('profit_row_7')?.scrollIntoView({behavior:'smooth',block:'center'});return}
+  if(target==='positions'){hudClose();document.querySelector('.tableCard')?.scrollIntoView({behavior:'smooth',block:'start'});return}
+  if(target==='settings'){hudClose();const d=document.querySelector('.controlCard details.utility');if(d)d.open=true;document.querySelector('.controlCard')?.scrollIntoView({behavior:'smooth',block:'start'});return}
+  if(target==='reports'){hudClose();document.querySelector('.exportBox')?.scrollIntoView({behavior:'smooth',block:'center'});document.getElementById('exportDays')?.focus();return}
+  if(target==='market'||target==='learning'){
+    const panel=document.getElementById('hudQuickPanel');
+    panel.hidden=false;
+    document.getElementById('hudQuickTitle').textContent=target==='market'?'Markedsdata':'AI-læring';
+    const st=hudLatestStatus||{};
+    const rows=[];
+    const add=(label,value)=>rows.push('<tr><td>'+safeHtml(label)+'</td><td>'+safeHtml(value??'-')+'</td></tr>');
+    if(target==='market'){
+      const health=st.intelligence?.source_health||{};
+      add('Aksjefeed',st.market_data?.stock_feed);
+      add('Kryptofeed',health.crypto_stream);
+      add('Aksjestrøm',health.stock_stream);
+      add('Nyheter',health.alpaca_news);
+      add('GDELT',health.gdelt);
+      add('SEC',health.sec);
+      const symbols=Object.values(st.symbols||{}).filter(x=>x.market==='CRYPTO');
+      add('Krypto: gamle kurser',symbols.filter(x=>String(x.action||'').startsWith('QUOTE_STALE')).length+' / '+symbols.length);
+      add('Status',st.engine_state);
+    }else{
+      const diag=st.entry_diagnostics||{};
+      const shadow=st.adaptive_edge?.shadow?.models||{};
+      add('Positive signaler',diag.positive_signals??0);
+      for(const [reason,n] of Object.entries(diag.blocker_counts||{}))add('Blokkert: '+reason,n);
+      for(const [model,stats] of Object.entries(shadow)){
+        const label=model.replaceAll('_',' ');
+        add(label,'Målt: '+(stats.samples??0)+' • Treff: '+(stats.win_rate_pct??'-')+'% • Avkastning: '+(stats.avg_return_bps??'-')+' bp');
+        if(stats.outcome_coverage_pct!=null)add(label+' datadekning',stats.outcome_coverage_pct+'%');
+      }
+      add('Læringsdatabase',st.learning_health?.last_error||'Ingen rapportert feil');
+    }
+    document.getElementById('hudQuickBody').innerHTML='<table>'+rows.join('')+'</table>';
+  }
+}
+document.addEventListener('keydown',event=>{if(event.key==='Escape')hudClose()});
+function downloadAnalysis(){const el=document.getElementById('exportDays');let d=parseInt(el?.value||'7',10);if(!Number.isFinite(d))d=7;d=Math.max(1,Math.min(30,d));window.location.href='/api/export?days='+encodeURIComponent(d)}
+function setSymbolFilter(f,btn){symbolFilter=f;document.querySelectorAll('.filterBtn').forEach(x=>x.classList.remove('active'));if(btn)btn.classList.add('active');filterSymbols()}
+function filterSymbols(){const q=(document.getElementById('symbolSearch')?.value||'').trim().toUpperCase();document.querySelectorAll('#tblSymbols tr').forEach(tr=>{const market=(tr.dataset.market||'').toLowerCase(),pos=Number(tr.dataset.pos||0);const matchFilter=symbolFilter==='all'||(symbolFilter==='stocks'&&market==='stock')||(symbolFilter==='crypto'&&market==='crypto')||(symbolFilter==='active'&&pos!==0);const matchQ=!q||(tr.dataset.symbol||'').includes(q);tr.style.display=matchFilter&&matchQ?'':'none'})}
+function renderSymbols(s){const b=document.getElementById('tblSymbols');b.innerHTML='';Object.keys(s||{}).sort((a,c)=>(s[a]?.market==='CRYPTO'?0:1)-(s[c]?.market==='CRYPTO'?0:1)||a.localeCompare(c)).forEach(sym=>{const x=s[sym]||{},sig=x.signal===1?'BUY':x.signal===-1?'SELL':(x.signal??'0');const tr=document.createElement('tr');tr.dataset.market=String(x.market||'');tr.dataset.pos=String(x.pos_qty??0);tr.dataset.symbol=String(sym).toUpperCase();const edge=x.debug?.p_tp_before_sl_pct!=null?('TP '+x.debug.p_tp_before_sl_pct+'% / EV '+(x.debug.ev_bps>=0?'+':'')+x.debug.ev_bps+'bp'):(x.debug?.prob_up_pct!=null?('P '+x.debug.prob_up_pct+'% / EV '+(x.debug.ev_bps>=0?'+':'')+x.debug.ev_bps+'bp'):'-');const marketBadge='<span class="marketBadge '+String(x.market||'').toLowerCase()+'">'+safeHtml(x.market||'-')+'</span>';const action=String(x.action||'NONE');const actionClass=/BUY|ENTRY|SUBMIT|FILLED/.test(action)?'pos':/SELL|EXIT|STOP|LOSS|ERROR|RECONCILE/.test(action)?'neg':'';tr.innerHTML=`<td>${marketBadge}</td><td><b class="symName">${safeHtml(sym)}</b></td><td>${fmt(x.price)}</td><td>${fmt(x.bid)}</td><td>${fmt(x.ask)}</td><td>${x.debug?.spread_bps??'-'}</td><td class="edgeCell">${edge}</td><td><b>${x.debug?.intel_score??'-'}</b></td><td>${sig}</td><td>${x.pos_qty??0}</td><td>${fmt(x.avg_entry)}</td><td class="${actionClass}">${safeHtml(action)}</td><td class="neg">${safeHtml(x.error||'')}</td>`;b.appendChild(tr)});filterSymbols()}
+function renderOrders(o){const b=document.getElementById('tblOrders');b.innerHTML='';(o||[]).forEach(x=>{const tr=document.createElement('tr'),t=String(x.filled_at||x.submitted_at||x.created_at||'').replace('T',' ').replace('Z','');tr.innerHTML=`<td class="mono small">${t||'-'}</td><td><b>${x.symbol||''}</b></td><td>${x.side||''}</td><td>${x.qty||x.notional||''}</td><td>${x.type||''}</td><td>${x.status||''}</td><td class="mono small">${x.id||''}</td>`;b.appendChild(tr)})}
+function setKpi(id,value,kind=''){const el=document.getElementById(id);if(!el)return;el.textContent=value??'-';el.className='kpiValue '+kind}
+let dashboardRefreshMs=10000;
+function updateKpis(s,running,cr,guardBad,guardPending){const p=s.profit_summary||{};const cls=v=>Number(v)>0?'pos':Number(v)<0?'neg':'';setKpi('kpi_today',money(p.today_usd??s.day_pnl_usd),cls(p.today_usd??s.day_pnl_usd));setKpi('kpi_3d',p.days3_usd==null?'-':money(p.days3_usd),cls(p.days3_usd));setKpi('kpi_7d',p.days7_usd==null?'-':money(p.days7_usd),cls(p.days7_usd));const _unmanaged=Object.values((s.risk_supervision||{}).unmanaged_positions||{});const _risky=_unmanaged.some(x=>x?.protection_status!=='STOP_ORDER_PRESENT')||(s.risk_supervision||{}).broker_data_fresh===false;setKpi('kpi_guard',_risky?'UKJENT':guardBad?'AVSTEM':_unmanaged.length?'MANUELL':guardPending?'EXIT':'OK',_risky||guardBad?'neg':_unmanaged.length?'warn':'pos');setKpi('kpi_cloud',cr.render?(cr.always_on_expected?'24/7 OK':'FREE'):'LOKAL',cr.always_on_expected?'pos':cr.render?'warn':'');const ru=s.render_usage||{};const rup=String(ru.policy||'UNMETERED').toUpperCase();const usage=ru.percent==null?'IKKE KOBLET':Number(ru.used_gb||0).toFixed(2)+'/'+Number(ru.cap_gb||5).toFixed(0)+' GB';setKpi('kpi_usage',usage,(rup==='HARD'||rup==='OVER')?'neg':rup==='NORMAL'?'pos':'');dashboardRefreshMs=(rup==='HARD'||rup==='OVER')?120000:rup==='STRONG'?90000:rup==='SAVE'?75000:rup==='WARN'?60000:10000;setKpi('kpi_alpaca',s.auth_ok===true?'Tilkoblet':s.auth_ok===false?'Feil':'Venter',s.auth_ok===true?'pos':s.auth_ok===false?'neg':'');const sx=s.saxo_sim||{};const sxState=String(sx.state||'DISABLED');const saxoButton=document.getElementById('saxoConnectLink');if(saxoButton){const connected=sx.account_connected===true&&sx.oauth_refresh_ready===true&&sx.token_persisted===true;saxoButton.style.display=connected?'none':'inline-block';saxoButton.textContent=sx.account_connected===true?'Saxo SIM er tilkoblet':'Koble til Saxo SIM';}setKpi('kpi_saxo',sxState==='RUNNING_SIM'?'SIM AKTIV':sxState==='DISABLED'?'AV':sxState==='WAITING_FOR_SIM_TOKEN'?'VENTER TOKEN':sxState,sxState==='RUNNING_SIM'?'pos':sxState==='ERROR'?'neg':'');document.getElementById('saxoDetails').textContent='State: '+sxState+' • konto: '+(sx.account_connected===true?'tilkoblet':'ikke bekreftet')+'\nSymboler: '+Number(sx.symbols_resolved||0)+'/'+Number(sx.symbols_requested||0)+' • posisjoner: '+Number(sx.positions||0)+'\nTrafikk: '+Number(sx.traffic_day_mb||0).toFixed(2)+' MB i dag / '+Number(sx.traffic_month_mb||0).toFixed(2)+' MB måned\nSiste poll: '+(sx.last_successful_poll||'ingen')+'\n'+(sx.error||sx.note||'');const raw=String(s.last_update||'');let t='-';try{const d=new Date(raw);if(!Number.isNaN(d.getTime()))t=d.toLocaleTimeString('no-NO',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}catch(e){}setKpi('kpi_updated',t);const chip=document.getElementById('headerRunChip');if(chip){chip.textContent=running?'TRADING AKTIV':'TRADING PAUSET';chip.className='runChip '+(running?'on':'off')}}
+async function refresh(force=false){try{const r=await apiFetch('/api/status?ts='+Date.now()+(force?'&force=1':''));const s=await r.json();hudLatestStatus=s;const live=Boolean(s.auth_ok)&&String(s.engine_state||'').toUpperCase()==='RUNNING';document.getElementById('liveDot').className='dot '+(live?'ok':'bad');document.getElementById('liveText').textContent=live?'ONLINE':'IKKE KLAR';const running=Boolean(s.armed)&&!Boolean(s.paused)&&!Boolean(s.kill);document.getElementById('st_engine').textContent=s.engine_state||'-';document.getElementById('st_version').textContent=s.version||'-';document.getElementById('st_auth').innerHTML=pill(s.auth_ok);document.getElementById('st_running').innerHTML=pill(running);const cr=s.cloud_runtime||{};const cloudEl=document.getElementById('st_cloud');if(cr.render){cloudEl.innerHTML=cr.always_on_expected?'<span class="pill good">24/7 OK</span>':'<span class="pill bad">RENDER FREE</span>'}else{cloudEl.innerHTML='<span class="pill neutral">LOKAL</span>'}const eg=s.execution_guard||{};const riskSupervision=s.risk_supervision||{};const unmanaged=riskSupervision.unmanaged_positions||{};const unmanagedSymbols=Object.keys(unmanaged);const unverified=unmanagedSymbols.filter(x=>unmanaged[x]?.protection_status!=='STOP_ORDER_PRESENT');const guardBad=Number(eg.reconcile_required||0)>0||unverified.length>0||riskSupervision.broker_data_fresh===false;const guardPending=Number(eg.active_exits||0)>0;document.getElementById('st_guard').innerHTML=guardBad?'<span class="pill bad">'+(unverified.length?'UBESKYTTET/UKJENT '+unverified.length:riskSupervision.broker_data_fresh===false?'MEGLERDATA UKJENT':'AVSTEM '+Number(eg.reconcile_required||0))+'</span>':unmanagedSymbols.length?'<span class="pill neutral">UKJENT POSISJON '+unmanagedSymbols.length+'</span>':guardPending?'<span class="pill neutral">EXIT '+Number(eg.active_exits||0)+'</span>':'<span class="pill good">OK</span>';updateKpis(s,running,cr,guardBad,guardPending);document.getElementById('st_market').textContent=(s.market_mode||'auto').toUpperCase();document.getElementById('st_session').textContent=s.stock_session||'-';document.getElementById('st_crypto').innerHTML=pill(s.crypto_24_7);document.getElementById('st_paper').innerHTML=pill(s.paper);const currentStrategy=(s.market_mode==='crypto'?(s.crypto_strategy_mode||s.strategy_mode):s.strategy_mode)||'-';
+const selectedStrategy=(s.market_mode==='crypto'?(s.selected_crypto_strategy_mode||s.selected_strategy_mode):(s.selected_strategy_mode||s.strategy_mode))||'-';
+document.getElementById('st_strategy').textContent=currentStrategy===selectedStrategy?currentStrategy:currentStrategy+' (bytter til '+selectedStrategy+')';const ii=s.intelligence||{};document.getElementById('st_intel').innerHTML=pill(ii.enabled!==false);const pe=s.profit_engine||{};document.getElementById('st_edge').innerHTML=pill(pe.enabled!==false);const ah=s.audit_health||{},lh=s.learning_health||{},bh=s.broker_history||{},sb=s.storage_backup||{};const storageLabel=sb.configured?(sb.last_error?'backupfeil':sb.last_success_utc?'databasebackup hver 5. min':'backup venter'):ah.persistent===false?'midlertidig lagring':'lokal lagring';document.getElementById('auditSummary').textContent='Historikk: '+((ah.last_error||lh.last_error)?'lagringsfeil':storageLabel)+' • Alpaca '+(bh.stream||'starter')+' • '+(bh.sync_complete?'historikk hentet':'historikk venter');const ae=s.adaptive_edge||{},md=s.market_data||{};const sh=ae.shadow?.models||{};const shN=Object.values(sh).reduce((a,x)=>a+Number(x?.samples||0),0);document.getElementById('st_adaptive').textContent=`${String(md.stock_feed||'iex').toUpperCase()} • router ${ae.router?'ON':'OFF'} • univers ${Number(ae.active_symbols||0)}/${Number(ae.total_symbols||0)} • shadow ${shN}`;document.getElementById('st_regime').textContent=(ii.regime_label||'-')+' '+(ii.regime_score??'');document.getElementById('st_risk').textContent=(ii.global_risk??'-')+'/100';document.getElementById('st_news').textContent=ii.last_headline||'-';document.getElementById('st_pnl').textContent=fmt(s.day_pnl_usd);renderProfit(s.profit_summary||{today_usd:s.day_pnl_usd});document.getElementById('st_last').textContent=s.last_update||'';document.getElementById('st_notes').textContent=s.notes||'';if(!strategySaving&&!strategyChoiceDirty){
+  const select=document.getElementById('strategySel');
+  const saved=s.selected_strategy_mode||s.strategy_mode||'scalp';
+  if(['scalp','hype','trend','cross'].includes(saved))select.value=saved;
+}document.getElementById('paperTests').style.display=s.paper===false?'none':'block';['auto','stocks','crypto'].forEach(m=>document.getElementById('m_'+m).classList.toggle('active',(s.market_mode||'auto')===m));const ab=document.getElementById('authBanner');if(unverified.length){ab.className='banner bad';ab.textContent='ADVARSEL: '+unverified.map(sym=>sym+' ('+String(unmanaged[sym]?.protection_status||'ukjent')+')').join(', ')+'. Posisjonen styres ikke automatisk av boten. Sjekk Alpaca PAPER; ingen ordre er lagt inn.';}else if(unmanagedSymbols.length){ab.className='banner warn';ab.textContent='Ukjent aksjeposisjon: '+unmanagedSymbols.join(', ')+'. Synlig stopordre er registrert, men boten forvalter den ikke.';}else if(s.auth_ok===false){ab.className='banner bad';ab.textContent='Alpaca avviser API-nøklene.'}else if(live&&cr.render&&cr.always_on_expected===false){ab.className='banner warn';ab.textContent='Trading kjører, men Render FREE kan sovne når dashboardet lukkes. Oppgrader Compute til 0.5c-512mb for ekte 24/7.'}else if(live){ab.className='banner good';ab.textContent=running?'Motor ONLINE – trading er STARTET.':'Motor ONLINE – trading er STOPPET/PAUSET.'}else{ab.className='banner warn';ab.textContent='Motoren starter eller restarter…'}renderSymbols(s.symbols||{});renderOrders(s.orders||[]);const lo=(s.orders||[])[0]?.id||'-';document.getElementById('lastOrderId').textContent=lo}catch(e){document.getElementById('liveDot').className='dot bad';document.getElementById('liveText').textContent='OFFLINE'}}
+async function refreshLoop(){await refresh(false);setTimeout(refreshLoop,dashboardRefreshMs)}refreshLoop();
+</script></body></html>\n"""
+
+
+@app.get("/")
+def home():
+    # Dashboard HTML contains modern JavaScript/CSS braces. Serving it directly
+    # avoids Jinja interpreting client-side syntax while still substituting the
+    # two server values the page needs. Login remains a normal Jinja template.
+    page = HTML.replace("{{ bot_version }}", str(BOT_VERSION)).replace("{{ build_id }}", str(BUILD_ID))
+    return Response(page, mimetype="text/html")
+
+
+@app.get("/manifest.webmanifest")
+def manifest():
+    return app.send_static_file("manifest.webmanifest")
+
+
+@app.get("/service-worker.js")
+def service_worker():
+    resp = app.send_static_file("sw.js")
+    resp.headers["Cache-Control"] = "no-cache"
+    resp.headers["Service-Worker-Allowed"] = "/"
+    return resp
+
+
+@app.get("/healthz")
+def healthz():
+    st = safe_read_json(STATUS_PATH, {})
+    last = st.get("last_update") if isinstance(st, dict) else None
+    age = None
+    if last:
+        try:
+            age = max(0.0, time.time() - datetime.fromisoformat(str(last).replace("Z", "+00:00")).timestamp())
+        except Exception:
+            pass
+    engine = st.get("engine_state") if isinstance(st, dict) else None
+    ok = engine not in {"AUTH_ERROR", "CRASHED"}
+    return jsonify({"ok": bool(ok), "engine_state": engine or "STARTING", "status_age_sec": age, "version": BOT_VERSION, "cloud_runtime": st.get("cloud_runtime", {}), "broker_history": st.get("broker_history", {}), "storage_backup": st.get("storage_backup", {})}), (200 if ok else 503)
+
+
+@app.post("/api/aep-protection/preview")
+def api_aep_protection_preview():
+    """Read fresh Alpaca PAPER data; never place an order in this endpoint."""
+    from paper_aep_protection import AepProtectionError, fresh_aep_unprotected
+    try:
+        from trading_bot import AlpacaRest, load_cfg
+        info = fresh_aep_unprotected(AlpacaRest(load_cfg()))
+    except AepProtectionError as exc:
+        return jsonify({"ok": False, "error": exc.message}), exc.code
+    except Exception:
+        return jsonify({"ok": False, "error": "Kunne ikke bekrefte fersk Alpaca PAPER-status"}), 503
+    nonce = secrets.token_urlsafe(22)
+    session["aep_protection_preview"] = {
+        "nonce": nonce, "qty": info["qty"],
+        "current_price": info["current_price"], "expires": time.time() + 120,
+    }
+    return jsonify({"ok": True, **info, "preview_nonce": nonce,
+                    "expires_in_seconds": 120})
+
+
+@app.post("/api/aep-protection/confirm")
+def api_aep_protection_confirm():
+    """Only an explicit two-stage dashboard action can send one PAPER stop."""
+    from paper_aep_protection import AepProtectionError, submit_approved_aep_stop
+    origin = request.headers.get("Origin", "")
+    if origin and origin.rstrip("/") != request.host_url.rstrip("/"):
+        return jsonify({"ok": False, "error": "Ugyldig opprinnelse"}), 403
+    payload = request.get_json(silent=True) or {}
+    preview = session.pop("aep_protection_preview", None)
+    if not isinstance(preview, dict) or not secrets.compare_digest(
+        str(payload.get("preview_nonce") or ""), str(preview.get("nonce") or "not-available")
+    ):
+        return jsonify({"ok": False, "error": "Hent ny forhåndsvisning før godkjenning"}), 409
+    if payload.get("confirmation") != "BEKREFT AEP PAPER STOP":
+        return jsonify({"ok": False, "error": "Ordren må bekreftes eksplisitt"}), 409
+    try:
+        from trading_bot import AlpacaRest, load_cfg
+        result = submit_approved_aep_stop(
+            AlpacaRest(load_cfg()), STATE_DIR, preview=preview,
+            stop_price=payload.get("stop_price"),
+        )
+    except AepProtectionError as exc:
+        return jsonify({"ok": False, "error": exc.message}), exc.code
+    except Exception:
+        return jsonify({"ok": False, "error": "Ordrestatus ukjent. Sjekk Alpaca PAPER."}), 503
+    return jsonify(result)
+
+
+@app.get("/api/control")
+def api_control_get():
+    return jsonify(safe_read_json(CONTROL_PATH, {}))
+
+
+@app.post("/api/control")
+def api_control_post():
+    patch = request.get_json(force=True, silent=True) or {}
+    allowed = {
+        "paused","kill","armed","extended_hours","test_mode","strategy_mode","crypto_strategy_mode","market_mode",
+        "fast_sma","slow_sma","hype_mom_n","min_mom_pct","min_move_pct","min_slope_pct","cooldown_sec",
+        "take_profit_pct","stop_loss_pct","trailing_activate_pct","trailing_stop_pct","max_hold_sec","refresh_bars_every_sec",
+        "crypto_cooldown_sec","crypto_take_profit_pct","crypto_stop_loss_pct","crypto_trailing_activate_pct","crypto_trailing_stop_pct",
+        "crypto_max_hold_sec","crypto_max_spread_bps","crypto_taker_fee_bps","crypto_min_net_edge_bps","crypto_entry_confirm_bars",
+        "activity_profile","intelligence_enabled","intelligence_entry_score","intelligence_exit_score",
+        "soft_exit_min_hold_sec","soft_exit_confirm_sec","entry_require_signal_reset","stock_entry_cutoff_min","stock_flatten_before_close_min","stock_loss_streak_window_sec","stock_loss_streak_count","stock_loss_streak_cooldown_sec","decision_log_interval_sec",
+        "adaptive_router_enabled","dynamic_universe_enabled","dynamic_universe_top_n","sector_confirmation_enabled","champion_challenger_enabled","shadow_log_interval_sec"
+    }
+    clean = {k:v for k,v in patch.items() if k in allowed}
+    return jsonify(patch_control(clean))
+
+
+@app.get("/api/status")
+def api_status():
+    st = safe_read_json(STATUS_PATH, {})
+    defaults = {"version":BOT_VERSION,"paper":True,"auth_ok":None,"engine_state":"STARTING","armed":False,"paused":True,"kill":False,"extended_hours":False,"auto_extended":False,"market_mode":"auto","stock_session":"CLOSED","crypto_24_7":True,"test_mode":False,"strategy_mode":"scalp","last_update":"","day_pnl_usd":0,"profit_summary":{"today_usd":0,"today_pct":0,"days3_usd":None,"days3_pct":None,"days7_usd":None,"days7_pct":None},"execution_guard":{"enabled":True,"active_exits":0,"blocked_entries":0,"reconcile_required":0},"adaptive_edge":{"enabled":True,"router":True,"active_symbols":0,"total_symbols":0},"market_data":{"stock_feed":"iex"},"notes":"","symbols":{},"orders":[]}
+    if isinstance(st, dict): defaults.update(st)
+    usage = safe_read_json(STATE_DIR / "render_usage.json", {})
+    if isinstance(usage, dict) and usage:
+        current = defaults.get("render_usage") if isinstance(defaults.get("render_usage"), dict) else {}
+        defaults["render_usage"] = {**current, **usage}
+    saxo = safe_read_json(STATE_DIR / "saxo_sim_status.json", {})
+    if isinstance(saxo, dict) and saxo:
+        defaults["saxo_sim"] = saxo
+    # Under bandwidth savings, the motor status can be minutes behind the
+    # preference saved in control.json. Keep the selector on the saved value.
+    saved_control = safe_read_json(CONTROL_PATH, {})
+    if isinstance(saved_control, dict):
+        selected = saved_control.get("strategy_mode")
+        selected_crypto = saved_control.get("crypto_strategy_mode")
+        if selected in {"scalp", "hype", "trend", "cross"}:
+            defaults["selected_strategy_mode"] = selected
+        if selected_crypto in {"scalp", "trend", "cross"}:
+            defaults["selected_crypto_strategy_mode"] = selected_crypto
+    defaults["version"] = BOT_VERSION
+    defaults["build_id"] = BUILD_ID
+    defaults["server_started_at_utc"] = STARTED_AT
+    return jsonify(defaults)
+
+
+@app.get("/api/profit_trades")
+def api_profit_trades():
+    try:
+        days = int(request.args.get("days", "1"))
+    except Exception:
+        days = 1
+    if days not in {1, 3, 7}:
+        return jsonify({"ok": False, "error": "days_must_be_1_3_or_7"}), 400
+    now = time.time()
+    cached = _PROFIT_TRADES_CACHE.get(days)
+    if cached and now - cached[0] < 60:
+        return jsonify({"ok": True, **cached[1], "cached": True})
+    try:
+        import trading_bot
+        from trade_export import realized_winning_trades
+        cfg = trading_bot.load_cfg()
+        api = trading_bot.AlpacaRest(cfg)
+        data = realized_winning_trades(api, days, max_items=50)
+        _PROFIT_TRADES_CACHE[days] = (now, data)
+        return jsonify({"ok": True, **data, "cached": False})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": "profit_trades_failed", "detail": str(exc)[:500]}), 500
+
+
+@app.get("/api/export")
+def api_export():
+    try:
+        days = int(request.args.get("days", "7"))
+    except Exception:
+        days = 7
+    if days < 1 or days > 30:
+        return jsonify({"ok": False, "error": "days_must_be_1_to_30"}), 400
+    if not _EXPORT_LOCK.acquire(blocking=False):
+        response = jsonify({"ok": False, "error": "export_in_progress", "detail": "En analysefil bygges allerede. Vent til den er ferdig og prov igjen."})
+        response.status_code = 429
+        response.headers["Retry-After"] = "30"
+        return response
+    export_file = None
+    try:
+        from trade_export import build_ai_analysis_export_file
+        export_file, manifest = build_ai_analysis_export_file(days, STATE_DIR, BOT_VERSION)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        filename = f"TradingBot_AI_ANALYSE_{days}d_{stamp}UTC.zip"
+        resp = send_file(export_file, mimetype="application/zip", as_attachment=True, download_name=filename, max_age=0, conditional=False)
+        export_file.seek(0, 2)
+        resp.content_length = export_file.tell()
+        export_file.seek(0)
+        resp.call_on_close(export_file.close)
+        resp.headers["Cache-Control"] = "no-store, max-age=0"
+        resp.headers["X-TradingBot-Export-Version"] = str(manifest.get("export_schema") or "")
+        return resp
+    except Exception as exc:
+        if export_file is not None:
+            export_file.close()
+        return jsonify({"ok": False, "error": "export_failed", "detail": str(exc)[:500]}), 500
+    finally:
+        _EXPORT_LOCK.release()
+
+
+@app.post("/api/evidence-backup/start")
+def api_evidence_backup_start():
+    """Schedule an authenticated one-shot PAPER backup when bandwidth is safe."""
+    from evidence_backup_jobs import BACKUP_JOBS
+    status, http_code = BACKUP_JOBS.start(STATE_DIR)
+    response = jsonify(status)
+    response.status_code = http_code
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.get("/api/evidence-backup/status")
+def api_evidence_backup_status():
+    from evidence_backup_jobs import BACKUP_JOBS
+    response = jsonify(BACKUP_JOBS.status())
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.get("/api/evidence-backup")
+def api_evidence_backup():
+    """Download only a ready, verified export. Never build during HTTP GET."""
+    from evidence_backup_jobs import BACKUP_JOBS
+    job, error = BACKUP_JOBS.begin_download(STATE_DIR)
+    if error:
+        code = 403 if error == "paper_only_required" else 429 if "budget" in error else 503
+        response = jsonify({"ok": False, "error": error})
+        response.status_code = code
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    try:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        result = send_file(
+            job["handle"], as_attachment=True,
+            download_name=f"TradingBot_EVIDENCE_{stamp}UTC.zip",
+            mimetype="application/zip", conditional=False, max_age=0,
+        )
+        result.headers["Cache-Control"] = "no-store, private, max-age=0"
+        result.headers["X-Content-Type-Options"] = "nosniff"
+        result.headers["X-TradingBot-SHA256"] = job["zip_sha256"]
+        result.headers["X-TradingBot-Evidence-Format"] = "tradingbot-paper-evidence-v1"
+        result.content_length = job["size_bytes"]
+        result.call_on_close(lambda: BACKUP_JOBS.finish_download(job["job_id"]))
+        return result
+    except Exception:
+        BACKUP_JOBS.finish_download(job["job_id"])
+        return jsonify({"ok": False, "error": "backup_download_failed"}), 500
+
+
+@app.post("/api/test_buy")
+def api_test_buy():
+    body=request.get_json(force=True,silent=True) or {}; sym=(body.get("symbol") or "AAPL").strip().upper(); qty=float(body.get("qty") or 1)
+    c=safe_read_json(CONTROL_PATH,{}); c=c if isinstance(c,dict) else {}; c["test_buy"]={"symbol":sym,"qty":qty,"go":True}; safe_write_json(CONTROL_PATH,c)
+    return jsonify({"ok":True,"symbol":sym,"qty":qty})
+
+
+@app.post("/api/test_sell_all")
+def api_test_sell_all():
+    body=request.get_json(force=True,silent=True) or {}; sym=(body.get("symbol") or "AAPL").strip().upper()
+    c=safe_read_json(CONTROL_PATH,{}); c=c if isinstance(c,dict) else {}; c["test_sell_all"]={"symbol":sym,"go":True}; safe_write_json(CONTROL_PATH,c)
+    return jsonify({"ok":True,"symbol":sym})
+
+
+if __name__ == "__main__":
+    host = os.getenv("DASHBOARD_BIND", "127.0.0.1")
+    port = int(os.getenv("PORT", os.getenv("DASHBOARD_PORT", "5050")))
+    app.run(host=host, port=port, debug=False, threaded=True)
+
+
++stop+
+    '. Ordren kan fylles til lavere kurs og blir aktiv til den fylles eller kanselleres. Bekrefte?';
+  if(!window.confirm(prompt))return;
+  aepSubmitBusy=true;
+  document.getElementById('aepConfirmBtn').disabled=true;
+  const out=document.getElementById('aepProtectFeedback');
+  out.textContent='Sender bekreftet stopordre til PAPER og kontrollerer svar…';
+  try{
+    const r=await apiFetch('/api/aep-protection/confirm',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({preview_nonce:aepPreview.preview_nonce,stop_price:stop,
+                           confirmation:'BEKREFT AEP PAPER STOP'})
+    });
+    const result=await r.json();
+    if(!r.ok||!result.ok)throw new Error(result.error||'Ordrestatus ukjent');
+    out.textContent='Alpaca PAPER tok imot ordren: '+result.qty+' AEP ved await postControl('/api/control',{armed:true,paused:false,kill:false})}
+async function stopTrading(){await postControl('/api/control',{armed:false,paused:true})}
+async function emergencyStop(){if(confirm('Aktivere NØDSTOPP? Nye handler blokkeres umiddelbart.'))await postControl('/api/control',{armed:false,paused:true,kill:true})}
+async function toggleBool(k){const r=await apiFetch('/api/control?ts='+Date.now());const c=await r.json();await postControl('/api/control',{[k]:!Boolean(c[k])})}
+async function setMarket(m){await postControl('/api/control',{market_mode:m})}
+let strategySaving=false, strategyChoiceDirty=false;
+async function setStrategy(){
+  const select=document.getElementById('strategySel'), chosen=select.value;
+  if(strategySaving||!['scalp','hype','trend','cross'].includes(chosen))return;
+  const cryptoChosen=chosen==='hype'?'scalp':chosen;
+  strategySaving=true;
+  try{
+    const response=await apiFetch('/api/control',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({strategy_mode:chosen,crypto_strategy_mode:cryptoChosen})
+    });
+    if(!response.ok)throw new Error('HTTP '+response.status);
+    const saved=await response.json();
+    if(saved.strategy_mode!==chosen||saved.crypto_strategy_mode!==cryptoChosen)
+      throw new Error('Valgt strategi ble ikke bekreftet av serveren');
+    strategyChoiceDirty=false;
+    await refresh(true);
+  }catch(error){
+    strategyChoiceDirty=true;
+    alert('Kunne ikke lagre strategien: '+String(error.message||error));
+  }finally{strategySaving=false}
+}
+async function setProfile(n){const p=n==='balanced'?{activity_profile:'balanced',intelligence_entry_score:67,intelligence_exit_score:42,fast_sma:8,slow_sma:24,hype_mom_n:5,min_mom_pct:.001,min_move_pct:.0003,min_slope_pct:.00025,cooldown_sec:90,take_profit_pct:.006,stop_loss_pct:.004,trailing_activate_pct:.003,trailing_stop_pct:.003,max_hold_sec:2700,refresh_bars_every_sec:15,crypto_crypto_cooldown_sec:60,crypto_take_profit_pct:.012,crypto_stop_loss_pct:.007,crypto_trailing_activate_pct:.007,crypto_trailing_stop_pct:.0045,crypto_max_hold_sec:3600,crypto_max_spread_bps:15,crypto_taker_fee_bps:25,crypto_min_net_edge_bps:30,crypto_entry_confirm_bars:2}:{activity_profile:'active',intelligence_entry_score:60,intelligence_exit_score:38,fast_sma:6,slow_sma:18,hype_mom_n:4,min_mom_pct:.0006,min_move_pct:.00015,min_slope_pct:.00015,cooldown_sec:45,take_profit_pct:.004,stop_loss_pct:.003,trailing_activate_pct:.002,trailing_stop_pct:.0025,max_hold_sec:1800,refresh_bars_every_sec:10,crypto_crypto_cooldown_sec:30,crypto_take_profit_pct:.01,crypto_stop_loss_pct:.006,crypto_trailing_activate_pct:.006,crypto_trailing_stop_pct:.004,crypto_max_hold_sec:2700,crypto_max_spread_bps:25,crypto_taker_fee_bps:25,crypto_min_net_edge_bps:20,crypto_entry_confirm_bars:2};await postControl('/api/control',p)}
+async function testBuy(){await postControl('/api/test_buy',{symbol:document.getElementById('buySym').value.trim().toUpperCase(),qty:Number(document.getElementById('buyQty').value||1)})}
+async function testSellAll(){await postControl('/api/test_sell_all',{symbol:document.getElementById('sellSym').value.trim().toUpperCase()})}
+let hudLatestStatus=null;
+function hudKey(event,target){if(event.key==='Enter'||event.key===' '){event.preventDefault();hudNavigate(target)}}
+function hudClose(){document.getElementById('hudQuickPanel').hidden=true}
+function hudNavigate(target){
+  if(target==='home'){hudClose();window.scrollTo({top:0,behavior:'smooth'});return}
+  if(target==='results'){hudClose();document.getElementById('profit_row_7')?.scrollIntoView({behavior:'smooth',block:'center'});return}
+  if(target==='positions'){hudClose();document.querySelector('.tableCard')?.scrollIntoView({behavior:'smooth',block:'start'});return}
+  if(target==='settings'){hudClose();const d=document.querySelector('.controlCard details.utility');if(d)d.open=true;document.querySelector('.controlCard')?.scrollIntoView({behavior:'smooth',block:'start'});return}
+  if(target==='reports'){hudClose();document.querySelector('.exportBox')?.scrollIntoView({behavior:'smooth',block:'center'});document.getElementById('exportDays')?.focus();return}
+  if(target==='market'||target==='learning'){
+    const panel=document.getElementById('hudQuickPanel');
+    panel.hidden=false;
+    document.getElementById('hudQuickTitle').textContent=target==='market'?'Markedsdata':'AI-læring';
+    const st=hudLatestStatus||{};
+    const rows=[];
+    const add=(label,value)=>rows.push('<tr><td>'+safeHtml(label)+'</td><td>'+safeHtml(value??'-')+'</td></tr>');
+    if(target==='market'){
+      const health=st.intelligence?.source_health||{};
+      add('Aksjefeed',st.market_data?.stock_feed);
+      add('Kryptofeed',health.crypto_stream);
+      add('Aksjestrøm',health.stock_stream);
+      add('Nyheter',health.alpaca_news);
+      add('GDELT',health.gdelt);
+      add('SEC',health.sec);
+      const symbols=Object.values(st.symbols||{}).filter(x=>x.market==='CRYPTO');
+      add('Krypto: gamle kurser',symbols.filter(x=>String(x.action||'').startsWith('QUOTE_STALE')).length+' / '+symbols.length);
+      add('Status',st.engine_state);
+    }else{
+      const diag=st.entry_diagnostics||{};
+      const shadow=st.adaptive_edge?.shadow?.models||{};
+      add('Positive signaler',diag.positive_signals??0);
+      for(const [reason,n] of Object.entries(diag.blocker_counts||{}))add('Blokkert: '+reason,n);
+      for(const [model,stats] of Object.entries(shadow)){
+        const label=model.replaceAll('_',' ');
+        add(label,'Målt: '+(stats.samples??0)+' • Treff: '+(stats.win_rate_pct??'-')+'% • Avkastning: '+(stats.avg_return_bps??'-')+' bp');
+        if(stats.outcome_coverage_pct!=null)add(label+' datadekning',stats.outcome_coverage_pct+'%');
+      }
+      add('Læringsdatabase',st.learning_health?.last_error||'Ingen rapportert feil');
+    }
+    document.getElementById('hudQuickBody').innerHTML='<table>'+rows.join('')+'</table>';
+  }
+}
+document.addEventListener('keydown',event=>{if(event.key==='Escape')hudClose()});
+function downloadAnalysis(){const el=document.getElementById('exportDays');let d=parseInt(el?.value||'7',10);if(!Number.isFinite(d))d=7;d=Math.max(1,Math.min(30,d));window.location.href='/api/export?days='+encodeURIComponent(d)}
+function setSymbolFilter(f,btn){symbolFilter=f;document.querySelectorAll('.filterBtn').forEach(x=>x.classList.remove('active'));if(btn)btn.classList.add('active');filterSymbols()}
+function filterSymbols(){const q=(document.getElementById('symbolSearch')?.value||'').trim().toUpperCase();document.querySelectorAll('#tblSymbols tr').forEach(tr=>{const market=(tr.dataset.market||'').toLowerCase(),pos=Number(tr.dataset.pos||0);const matchFilter=symbolFilter==='all'||(symbolFilter==='stocks'&&market==='stock')||(symbolFilter==='crypto'&&market==='crypto')||(symbolFilter==='active'&&pos!==0);const matchQ=!q||(tr.dataset.symbol||'').includes(q);tr.style.display=matchFilter&&matchQ?'':'none'})}
+function renderSymbols(s){const b=document.getElementById('tblSymbols');b.innerHTML='';Object.keys(s||{}).sort((a,c)=>(s[a]?.market==='CRYPTO'?0:1)-(s[c]?.market==='CRYPTO'?0:1)||a.localeCompare(c)).forEach(sym=>{const x=s[sym]||{},sig=x.signal===1?'BUY':x.signal===-1?'SELL':(x.signal??'0');const tr=document.createElement('tr');tr.dataset.market=String(x.market||'');tr.dataset.pos=String(x.pos_qty??0);tr.dataset.symbol=String(sym).toUpperCase();const edge=x.debug?.p_tp_before_sl_pct!=null?('TP '+x.debug.p_tp_before_sl_pct+'% / EV '+(x.debug.ev_bps>=0?'+':'')+x.debug.ev_bps+'bp'):(x.debug?.prob_up_pct!=null?('P '+x.debug.prob_up_pct+'% / EV '+(x.debug.ev_bps>=0?'+':'')+x.debug.ev_bps+'bp'):'-');const marketBadge='<span class="marketBadge '+String(x.market||'').toLowerCase()+'">'+safeHtml(x.market||'-')+'</span>';const action=String(x.action||'NONE');const actionClass=/BUY|ENTRY|SUBMIT|FILLED/.test(action)?'pos':/SELL|EXIT|STOP|LOSS|ERROR|RECONCILE/.test(action)?'neg':'';tr.innerHTML=`<td>${marketBadge}</td><td><b class="symName">${safeHtml(sym)}</b></td><td>${fmt(x.price)}</td><td>${fmt(x.bid)}</td><td>${fmt(x.ask)}</td><td>${x.debug?.spread_bps??'-'}</td><td class="edgeCell">${edge}</td><td><b>${x.debug?.intel_score??'-'}</b></td><td>${sig}</td><td>${x.pos_qty??0}</td><td>${fmt(x.avg_entry)}</td><td class="${actionClass}">${safeHtml(action)}</td><td class="neg">${safeHtml(x.error||'')}</td>`;b.appendChild(tr)});filterSymbols()}
+function renderOrders(o){const b=document.getElementById('tblOrders');b.innerHTML='';(o||[]).forEach(x=>{const tr=document.createElement('tr'),t=String(x.filled_at||x.submitted_at||x.created_at||'').replace('T',' ').replace('Z','');tr.innerHTML=`<td class="mono small">${t||'-'}</td><td><b>${x.symbol||''}</b></td><td>${x.side||''}</td><td>${x.qty||x.notional||''}</td><td>${x.type||''}</td><td>${x.status||''}</td><td class="mono small">${x.id||''}</td>`;b.appendChild(tr)})}
+function setKpi(id,value,kind=''){const el=document.getElementById(id);if(!el)return;el.textContent=value??'-';el.className='kpiValue '+kind}
+let dashboardRefreshMs=10000;
+function updateKpis(s,running,cr,guardBad,guardPending){const p=s.profit_summary||{};const cls=v=>Number(v)>0?'pos':Number(v)<0?'neg':'';setKpi('kpi_today',money(p.today_usd??s.day_pnl_usd),cls(p.today_usd??s.day_pnl_usd));setKpi('kpi_3d',p.days3_usd==null?'-':money(p.days3_usd),cls(p.days3_usd));setKpi('kpi_7d',p.days7_usd==null?'-':money(p.days7_usd),cls(p.days7_usd));const _unmanaged=Object.values((s.risk_supervision||{}).unmanaged_positions||{});const _risky=_unmanaged.some(x=>x?.protection_status!=='STOP_ORDER_PRESENT')||(s.risk_supervision||{}).broker_data_fresh===false;setKpi('kpi_guard',_risky?'UKJENT':guardBad?'AVSTEM':_unmanaged.length?'MANUELL':guardPending?'EXIT':'OK',_risky||guardBad?'neg':_unmanaged.length?'warn':'pos');setKpi('kpi_cloud',cr.render?(cr.always_on_expected?'24/7 OK':'FREE'):'LOKAL',cr.always_on_expected?'pos':cr.render?'warn':'');const ru=s.render_usage||{};const rup=String(ru.policy||'UNMETERED').toUpperCase();const usage=ru.percent==null?'IKKE KOBLET':Number(ru.used_gb||0).toFixed(2)+'/'+Number(ru.cap_gb||5).toFixed(0)+' GB';setKpi('kpi_usage',usage,(rup==='HARD'||rup==='OVER')?'neg':rup==='NORMAL'?'pos':'');dashboardRefreshMs=(rup==='HARD'||rup==='OVER')?120000:rup==='STRONG'?90000:rup==='SAVE'?75000:rup==='WARN'?60000:10000;setKpi('kpi_alpaca',s.auth_ok===true?'Tilkoblet':s.auth_ok===false?'Feil':'Venter',s.auth_ok===true?'pos':s.auth_ok===false?'neg':'');const sx=s.saxo_sim||{};const sxState=String(sx.state||'DISABLED');const saxoButton=document.getElementById('saxoConnectLink');if(saxoButton){const connected=sx.account_connected===true&&sx.oauth_refresh_ready===true&&sx.token_persisted===true;saxoButton.style.display=connected?'none':'inline-block';saxoButton.textContent=sx.account_connected===true?'Saxo SIM er tilkoblet':'Koble til Saxo SIM';}setKpi('kpi_saxo',sxState==='RUNNING_SIM'?'SIM AKTIV':sxState==='DISABLED'?'AV':sxState==='WAITING_FOR_SIM_TOKEN'?'VENTER TOKEN':sxState,sxState==='RUNNING_SIM'?'pos':sxState==='ERROR'?'neg':'');document.getElementById('saxoDetails').textContent='State: '+sxState+' • konto: '+(sx.account_connected===true?'tilkoblet':'ikke bekreftet')+'\nSymboler: '+Number(sx.symbols_resolved||0)+'/'+Number(sx.symbols_requested||0)+' • posisjoner: '+Number(sx.positions||0)+'\nTrafikk: '+Number(sx.traffic_day_mb||0).toFixed(2)+' MB i dag / '+Number(sx.traffic_month_mb||0).toFixed(2)+' MB måned\nSiste poll: '+(sx.last_successful_poll||'ingen')+'\n'+(sx.error||sx.note||'');const raw=String(s.last_update||'');let t='-';try{const d=new Date(raw);if(!Number.isNaN(d.getTime()))t=d.toLocaleTimeString('no-NO',{hour:'2-digit',minute:'2-digit',second:'2-digit'})}catch(e){}setKpi('kpi_updated',t);const chip=document.getElementById('headerRunChip');if(chip){chip.textContent=running?'TRADING AKTIV':'TRADING PAUSET';chip.className='runChip '+(running?'on':'off')}}
+async function refresh(force=false){try{const r=await apiFetch('/api/status?ts='+Date.now()+(force?'&force=1':''));const s=await r.json();hudLatestStatus=s;const live=Boolean(s.auth_ok)&&String(s.engine_state||'').toUpperCase()==='RUNNING';document.getElementById('liveDot').className='dot '+(live?'ok':'bad');document.getElementById('liveText').textContent=live?'ONLINE':'IKKE KLAR';const running=Boolean(s.armed)&&!Boolean(s.paused)&&!Boolean(s.kill);document.getElementById('st_engine').textContent=s.engine_state||'-';document.getElementById('st_version').textContent=s.version||'-';document.getElementById('st_auth').innerHTML=pill(s.auth_ok);document.getElementById('st_running').innerHTML=pill(running);const cr=s.cloud_runtime||{};const cloudEl=document.getElementById('st_cloud');if(cr.render){cloudEl.innerHTML=cr.always_on_expected?'<span class="pill good">24/7 OK</span>':'<span class="pill bad">RENDER FREE</span>'}else{cloudEl.innerHTML='<span class="pill neutral">LOKAL</span>'}const eg=s.execution_guard||{};const riskSupervision=s.risk_supervision||{};const unmanaged=riskSupervision.unmanaged_positions||{};const unmanagedSymbols=Object.keys(unmanaged);const unverified=unmanagedSymbols.filter(x=>unmanaged[x]?.protection_status!=='STOP_ORDER_PRESENT');const guardBad=Number(eg.reconcile_required||0)>0||unverified.length>0||riskSupervision.broker_data_fresh===false;const guardPending=Number(eg.active_exits||0)>0;document.getElementById('st_guard').innerHTML=guardBad?'<span class="pill bad">'+(unverified.length?'UBESKYTTET/UKJENT '+unverified.length:riskSupervision.broker_data_fresh===false?'MEGLERDATA UKJENT':'AVSTEM '+Number(eg.reconcile_required||0))+'</span>':unmanagedSymbols.length?'<span class="pill neutral">UKJENT POSISJON '+unmanagedSymbols.length+'</span>':guardPending?'<span class="pill neutral">EXIT '+Number(eg.active_exits||0)+'</span>':'<span class="pill good">OK</span>';updateKpis(s,running,cr,guardBad,guardPending);document.getElementById('st_market').textContent=(s.market_mode||'auto').toUpperCase();document.getElementById('st_session').textContent=s.stock_session||'-';document.getElementById('st_crypto').innerHTML=pill(s.crypto_24_7);document.getElementById('st_paper').innerHTML=pill(s.paper);const currentStrategy=(s.market_mode==='crypto'?(s.crypto_strategy_mode||s.strategy_mode):s.strategy_mode)||'-';
+const selectedStrategy=(s.market_mode==='crypto'?(s.selected_crypto_strategy_mode||s.selected_strategy_mode):(s.selected_strategy_mode||s.strategy_mode))||'-';
+document.getElementById('st_strategy').textContent=currentStrategy===selectedStrategy?currentStrategy:currentStrategy+' (bytter til '+selectedStrategy+')';const ii=s.intelligence||{};document.getElementById('st_intel').innerHTML=pill(ii.enabled!==false);const pe=s.profit_engine||{};document.getElementById('st_edge').innerHTML=pill(pe.enabled!==false);const ah=s.audit_health||{},lh=s.learning_health||{},bh=s.broker_history||{},sb=s.storage_backup||{};const storageLabel=sb.configured?(sb.last_error?'backupfeil':sb.last_success_utc?'databasebackup hver 5. min':'backup venter'):ah.persistent===false?'midlertidig lagring':'lokal lagring';document.getElementById('auditSummary').textContent='Historikk: '+((ah.last_error||lh.last_error)?'lagringsfeil':storageLabel)+' • Alpaca '+(bh.stream||'starter')+' • '+(bh.sync_complete?'historikk hentet':'historikk venter');const ae=s.adaptive_edge||{},md=s.market_data||{};const sh=ae.shadow?.models||{};const shN=Object.values(sh).reduce((a,x)=>a+Number(x?.samples||0),0);document.getElementById('st_adaptive').textContent=`${String(md.stock_feed||'iex').toUpperCase()} • router ${ae.router?'ON':'OFF'} • univers ${Number(ae.active_symbols||0)}/${Number(ae.total_symbols||0)} • shadow ${shN}`;document.getElementById('st_regime').textContent=(ii.regime_label||'-')+' '+(ii.regime_score??'');document.getElementById('st_risk').textContent=(ii.global_risk??'-')+'/100';document.getElementById('st_news').textContent=ii.last_headline||'-';document.getElementById('st_pnl').textContent=fmt(s.day_pnl_usd);renderProfit(s.profit_summary||{today_usd:s.day_pnl_usd});document.getElementById('st_last').textContent=s.last_update||'';document.getElementById('st_notes').textContent=s.notes||'';if(!strategySaving&&!strategyChoiceDirty){
+  const select=document.getElementById('strategySel');
+  const saved=s.selected_strategy_mode||s.strategy_mode||'scalp';
+  if(['scalp','hype','trend','cross'].includes(saved))select.value=saved;
+}document.getElementById('paperTests').style.display=s.paper===false?'none':'block';['auto','stocks','crypto'].forEach(m=>document.getElementById('m_'+m).classList.toggle('active',(s.market_mode||'auto')===m));const ab=document.getElementById('authBanner');if(unverified.length){ab.className='banner bad';ab.textContent='ADVARSEL: '+unverified.map(sym=>sym+' ('+String(unmanaged[sym]?.protection_status||'ukjent')+')').join(', ')+'. Posisjonen styres ikke automatisk av boten. Sjekk Alpaca PAPER; ingen ordre er lagt inn.';}else if(unmanagedSymbols.length){ab.className='banner warn';ab.textContent='Ukjent aksjeposisjon: '+unmanagedSymbols.join(', ')+'. Synlig stopordre er registrert, men boten forvalter den ikke.';}else if(s.auth_ok===false){ab.className='banner bad';ab.textContent='Alpaca avviser API-nøklene.'}else if(live&&cr.render&&cr.always_on_expected===false){ab.className='banner warn';ab.textContent='Trading kjører, men Render FREE kan sovne når dashboardet lukkes. Oppgrader Compute til 0.5c-512mb for ekte 24/7.'}else if(live){ab.className='banner good';ab.textContent=running?'Motor ONLINE – trading er STARTET.':'Motor ONLINE – trading er STOPPET/PAUSET.'}else{ab.className='banner warn';ab.textContent='Motoren starter eller restarter…'}renderSymbols(s.symbols||{});renderOrders(s.orders||[]);const lo=(s.orders||[])[0]?.id||'-';document.getElementById('lastOrderId').textContent=lo}catch(e){document.getElementById('liveDot').className='dot bad';document.getElementById('liveText').textContent='OFFLINE'}}
+async function refreshLoop(){await refresh(false);setTimeout(refreshLoop,dashboardRefreshMs)}refreshLoop();
+</script></body></html>\n"""
+
+
+@app.get("/")
+def home():
+    # Dashboard HTML contains modern JavaScript/CSS braces. Serving it directly
+    # avoids Jinja interpreting client-side syntax while still substituting the
+    # two server values the page needs. Login remains a normal Jinja template.
+    page = HTML.replace("{{ bot_version }}", str(BOT_VERSION)).replace("{{ build_id }}", str(BUILD_ID))
+    return Response(page, mimetype="text/html")
+
+
+@app.get("/manifest.webmanifest")
+def manifest():
+    return app.send_static_file("manifest.webmanifest")
+
+
+@app.get("/service-worker.js")
+def service_worker():
+    resp = app.send_static_file("sw.js")
+    resp.headers["Cache-Control"] = "no-cache"
+    resp.headers["Service-Worker-Allowed"] = "/"
+    return resp
+
+
+@app.get("/healthz")
+def healthz():
+    st = safe_read_json(STATUS_PATH, {})
+    last = st.get("last_update") if isinstance(st, dict) else None
+    age = None
+    if last:
+        try:
+            age = max(0.0, time.time() - datetime.fromisoformat(str(last).replace("Z", "+00:00")).timestamp())
+        except Exception:
+            pass
+    engine = st.get("engine_state") if isinstance(st, dict) else None
+    ok = engine not in {"AUTH_ERROR", "CRASHED"}
+    return jsonify({"ok": bool(ok), "engine_state": engine or "STARTING", "status_age_sec": age, "version": BOT_VERSION, "cloud_runtime": st.get("cloud_runtime", {}), "broker_history": st.get("broker_history", {}), "storage_backup": st.get("storage_backup", {})}), (200 if ok else 503)
+
+
+@app.post("/api/aep-protection/preview")
+def api_aep_protection_preview():
+    """Read fresh Alpaca PAPER data; never place an order in this endpoint."""
+    from paper_aep_protection import AepProtectionError, fresh_aep_unprotected
+    try:
+        from trading_bot import AlpacaRest, load_cfg
+        info = fresh_aep_unprotected(AlpacaRest(load_cfg()))
+    except AepProtectionError as exc:
+        return jsonify({"ok": False, "error": exc.message}), exc.code
+    except Exception:
+        return jsonify({"ok": False, "error": "Kunne ikke bekrefte fersk Alpaca PAPER-status"}), 503
+    nonce = secrets.token_urlsafe(22)
+    session["aep_protection_preview"] = {
+        "nonce": nonce, "qty": info["qty"],
+        "current_price": info["current_price"], "expires": time.time() + 120,
+    }
+    return jsonify({"ok": True, **info, "preview_nonce": nonce,
+                    "expires_in_seconds": 120})
+
+
+@app.post("/api/aep-protection/confirm")
+def api_aep_protection_confirm():
+    """Only an explicit two-stage dashboard action can send one PAPER stop."""
+    from paper_aep_protection import AepProtectionError, submit_approved_aep_stop
+    origin = request.headers.get("Origin", "")
+    if origin and origin.rstrip("/") != request.host_url.rstrip("/"):
+        return jsonify({"ok": False, "error": "Ugyldig opprinnelse"}), 403
+    payload = request.get_json(silent=True) or {}
+    preview = session.pop("aep_protection_preview", None)
+    if not isinstance(preview, dict) or not secrets.compare_digest(
+        str(payload.get("preview_nonce") or ""), str(preview.get("nonce") or "not-available")
+    ):
+        return jsonify({"ok": False, "error": "Hent ny forhåndsvisning før godkjenning"}), 409
+    if payload.get("confirmation") != "BEKREFT AEP PAPER STOP":
+        return jsonify({"ok": False, "error": "Ordren må bekreftes eksplisitt"}), 409
+    try:
+        from trading_bot import AlpacaRest, load_cfg
+        result = submit_approved_aep_stop(
+            AlpacaRest(load_cfg()), STATE_DIR, preview=preview,
+            stop_price=payload.get("stop_price"),
+        )
+    except AepProtectionError as exc:
+        return jsonify({"ok": False, "error": exc.message}), exc.code
+    except Exception:
+        return jsonify({"ok": False, "error": "Ordrestatus ukjent. Sjekk Alpaca PAPER."}), 503
+    return jsonify(result)
+
+
+@app.get("/api/control")
+def api_control_get():
+    return jsonify(safe_read_json(CONTROL_PATH, {}))
+
+
+@app.post("/api/control")
+def api_control_post():
+    patch = request.get_json(force=True, silent=True) or {}
+    allowed = {
+        "paused","kill","armed","extended_hours","test_mode","strategy_mode","crypto_strategy_mode","market_mode",
+        "fast_sma","slow_sma","hype_mom_n","min_mom_pct","min_move_pct","min_slope_pct","cooldown_sec",
+        "take_profit_pct","stop_loss_pct","trailing_activate_pct","trailing_stop_pct","max_hold_sec","refresh_bars_every_sec",
+        "crypto_cooldown_sec","crypto_take_profit_pct","crypto_stop_loss_pct","crypto_trailing_activate_pct","crypto_trailing_stop_pct",
+        "crypto_max_hold_sec","crypto_max_spread_bps","crypto_taker_fee_bps","crypto_min_net_edge_bps","crypto_entry_confirm_bars",
+        "activity_profile","intelligence_enabled","intelligence_entry_score","intelligence_exit_score",
+        "soft_exit_min_hold_sec","soft_exit_confirm_sec","entry_require_signal_reset","stock_entry_cutoff_min","stock_flatten_before_close_min","stock_loss_streak_window_sec","stock_loss_streak_count","stock_loss_streak_cooldown_sec","decision_log_interval_sec",
+        "adaptive_router_enabled","dynamic_universe_enabled","dynamic_universe_top_n","sector_confirmation_enabled","champion_challenger_enabled","shadow_log_interval_sec"
+    }
+    clean = {k:v for k,v in patch.items() if k in allowed}
+    return jsonify(patch_control(clean))
+
+
+@app.get("/api/status")
+def api_status():
+    st = safe_read_json(STATUS_PATH, {})
+    defaults = {"version":BOT_VERSION,"paper":True,"auth_ok":None,"engine_state":"STARTING","armed":False,"paused":True,"kill":False,"extended_hours":False,"auto_extended":False,"market_mode":"auto","stock_session":"CLOSED","crypto_24_7":True,"test_mode":False,"strategy_mode":"scalp","last_update":"","day_pnl_usd":0,"profit_summary":{"today_usd":0,"today_pct":0,"days3_usd":None,"days3_pct":None,"days7_usd":None,"days7_pct":None},"execution_guard":{"enabled":True,"active_exits":0,"blocked_entries":0,"reconcile_required":0},"adaptive_edge":{"enabled":True,"router":True,"active_symbols":0,"total_symbols":0},"market_data":{"stock_feed":"iex"},"notes":"","symbols":{},"orders":[]}
+    if isinstance(st, dict): defaults.update(st)
+    usage = safe_read_json(STATE_DIR / "render_usage.json", {})
+    if isinstance(usage, dict) and usage:
+        current = defaults.get("render_usage") if isinstance(defaults.get("render_usage"), dict) else {}
+        defaults["render_usage"] = {**current, **usage}
+    saxo = safe_read_json(STATE_DIR / "saxo_sim_status.json", {})
+    if isinstance(saxo, dict) and saxo:
+        defaults["saxo_sim"] = saxo
+    # Under bandwidth savings, the motor status can be minutes behind the
+    # preference saved in control.json. Keep the selector on the saved value.
+    saved_control = safe_read_json(CONTROL_PATH, {})
+    if isinstance(saved_control, dict):
+        selected = saved_control.get("strategy_mode")
+        selected_crypto = saved_control.get("crypto_strategy_mode")
+        if selected in {"scalp", "hype", "trend", "cross"}:
+            defaults["selected_strategy_mode"] = selected
+        if selected_crypto in {"scalp", "trend", "cross"}:
+            defaults["selected_crypto_strategy_mode"] = selected_crypto
+    defaults["version"] = BOT_VERSION
+    defaults["build_id"] = BUILD_ID
+    defaults["server_started_at_utc"] = STARTED_AT
+    return jsonify(defaults)
+
+
+@app.get("/api/profit_trades")
+def api_profit_trades():
+    try:
+        days = int(request.args.get("days", "1"))
+    except Exception:
+        days = 1
+    if days not in {1, 3, 7}:
+        return jsonify({"ok": False, "error": "days_must_be_1_3_or_7"}), 400
+    now = time.time()
+    cached = _PROFIT_TRADES_CACHE.get(days)
+    if cached and now - cached[0] < 60:
+        return jsonify({"ok": True, **cached[1], "cached": True})
+    try:
+        import trading_bot
+        from trade_export import realized_winning_trades
+        cfg = trading_bot.load_cfg()
+        api = trading_bot.AlpacaRest(cfg)
+        data = realized_winning_trades(api, days, max_items=50)
+        _PROFIT_TRADES_CACHE[days] = (now, data)
+        return jsonify({"ok": True, **data, "cached": False})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": "profit_trades_failed", "detail": str(exc)[:500]}), 500
+
+
+@app.get("/api/export")
+def api_export():
+    try:
+        days = int(request.args.get("days", "7"))
+    except Exception:
+        days = 7
+    if days < 1 or days > 30:
+        return jsonify({"ok": False, "error": "days_must_be_1_to_30"}), 400
+    if not _EXPORT_LOCK.acquire(blocking=False):
+        response = jsonify({"ok": False, "error": "export_in_progress", "detail": "En analysefil bygges allerede. Vent til den er ferdig og prov igjen."})
+        response.status_code = 429
+        response.headers["Retry-After"] = "30"
+        return response
+    export_file = None
+    try:
+        from trade_export import build_ai_analysis_export_file
+        export_file, manifest = build_ai_analysis_export_file(days, STATE_DIR, BOT_VERSION)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        filename = f"TradingBot_AI_ANALYSE_{days}d_{stamp}UTC.zip"
+        resp = send_file(export_file, mimetype="application/zip", as_attachment=True, download_name=filename, max_age=0, conditional=False)
+        export_file.seek(0, 2)
+        resp.content_length = export_file.tell()
+        export_file.seek(0)
+        resp.call_on_close(export_file.close)
+        resp.headers["Cache-Control"] = "no-store, max-age=0"
+        resp.headers["X-TradingBot-Export-Version"] = str(manifest.get("export_schema") or "")
+        return resp
+    except Exception as exc:
+        if export_file is not None:
+            export_file.close()
+        return jsonify({"ok": False, "error": "export_failed", "detail": str(exc)[:500]}), 500
+    finally:
+        _EXPORT_LOCK.release()
+
+
+@app.post("/api/evidence-backup/start")
+def api_evidence_backup_start():
+    """Schedule an authenticated one-shot PAPER backup when bandwidth is safe."""
+    from evidence_backup_jobs import BACKUP_JOBS
+    status, http_code = BACKUP_JOBS.start(STATE_DIR)
+    response = jsonify(status)
+    response.status_code = http_code
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.get("/api/evidence-backup/status")
+def api_evidence_backup_status():
+    from evidence_backup_jobs import BACKUP_JOBS
+    response = jsonify(BACKUP_JOBS.status())
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.get("/api/evidence-backup")
+def api_evidence_backup():
+    """Download only a ready, verified export. Never build during HTTP GET."""
+    from evidence_backup_jobs import BACKUP_JOBS
+    job, error = BACKUP_JOBS.begin_download(STATE_DIR)
+    if error:
+        code = 403 if error == "paper_only_required" else 429 if "budget" in error else 503
+        response = jsonify({"ok": False, "error": error})
+        response.status_code = code
+        response.headers["Cache-Control"] = "no-store"
+        return response
+    try:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        result = send_file(
+            job["handle"], as_attachment=True,
+            download_name=f"TradingBot_EVIDENCE_{stamp}UTC.zip",
+            mimetype="application/zip", conditional=False, max_age=0,
+        )
+        result.headers["Cache-Control"] = "no-store, private, max-age=0"
+        result.headers["X-Content-Type-Options"] = "nosniff"
+        result.headers["X-TradingBot-SHA256"] = job["zip_sha256"]
+        result.headers["X-TradingBot-Evidence-Format"] = "tradingbot-paper-evidence-v1"
+        result.content_length = job["size_bytes"]
+        result.call_on_close(lambda: BACKUP_JOBS.finish_download(job["job_id"]))
+        return result
+    except Exception:
+        BACKUP_JOBS.finish_download(job["job_id"])
+        return jsonify({"ok": False, "error": "backup_download_failed"}), 500
+
+
+@app.post("/api/test_buy")
+def api_test_buy():
+    body=request.get_json(force=True,silent=True) or {}; sym=(body.get("symbol") or "AAPL").strip().upper(); qty=float(body.get("qty") or 1)
+    c=safe_read_json(CONTROL_PATH,{}); c=c if isinstance(c,dict) else {}; c["test_buy"]={"symbol":sym,"qty":qty,"go":True}; safe_write_json(CONTROL_PATH,c)
+    return jsonify({"ok":True,"symbol":sym,"qty":qty})
+
+
+@app.post("/api/test_sell_all")
+def api_test_sell_all():
+    body=request.get_json(force=True,silent=True) or {}; sym=(body.get("symbol") or "AAPL").strip().upper()
+    c=safe_read_json(CONTROL_PATH,{}); c=c if isinstance(c,dict) else {}; c["test_sell_all"]={"symbol":sym,"go":True}; safe_write_json(CONTROL_PATH,c)
+    return jsonify({"ok":True,"symbol":sym})
+
+
+if __name__ == "__main__":
+    host = os.getenv("DASHBOARD_BIND", "127.0.0.1")
+    port = int(os.getenv("PORT", os.getenv("DASHBOARD_PORT", "5050")))
+    app.run(host=host, port=port, debug=False, threaded=True)
+
+
++
+      result.stop_price+'. Ordre-ID: '+result.order_id+
+      '. Avventer verifisering av aktiv ordre.';
+    document.getElementById('aepProtectReview').style.display='none';
+    aepPreview=null;
+    await refresh(true);
+  }catch(error){
+    out.textContent=String(error.message||error)+
+      ' Kontroller PAPER-kontoen før et nytt forsøk.';
+    aepPreview=null;
+    document.getElementById('aepProtectReview').style.display='none';
+  }finally{
+    aepSubmitBusy=false;
+    document.getElementById('aepConfirmBtn').disabled=false;
+  }
+}
 async function startTrading(){await postControl('/api/control',{armed:true,paused:false,kill:false})}
 async function stopTrading(){await postControl('/api/control',{armed:false,paused:true})}
 async function emergencyStop(){if(confirm('Aktivere NØDSTOPP? Nye handler blokkeres umiddelbart.'))await postControl('/api/control',{armed:false,paused:true,kill:true})}
@@ -2651,6 +4143,54 @@ def healthz():
     engine = st.get("engine_state") if isinstance(st, dict) else None
     ok = engine not in {"AUTH_ERROR", "CRASHED"}
     return jsonify({"ok": bool(ok), "engine_state": engine or "STARTING", "status_age_sec": age, "version": BOT_VERSION, "cloud_runtime": st.get("cloud_runtime", {}), "broker_history": st.get("broker_history", {}), "storage_backup": st.get("storage_backup", {})}), (200 if ok else 503)
+
+
+@app.post("/api/aep-protection/preview")
+def api_aep_protection_preview():
+    """Read fresh Alpaca PAPER data; never place an order in this endpoint."""
+    from paper_aep_protection import AepProtectionError, fresh_aep_unprotected
+    try:
+        from trading_bot import AlpacaRest, load_cfg
+        info = fresh_aep_unprotected(AlpacaRest(load_cfg()))
+    except AepProtectionError as exc:
+        return jsonify({"ok": False, "error": exc.message}), exc.code
+    except Exception:
+        return jsonify({"ok": False, "error": "Kunne ikke bekrefte fersk Alpaca PAPER-status"}), 503
+    nonce = secrets.token_urlsafe(22)
+    session["aep_protection_preview"] = {
+        "nonce": nonce, "qty": info["qty"],
+        "current_price": info["current_price"], "expires": time.time() + 120,
+    }
+    return jsonify({"ok": True, **info, "preview_nonce": nonce,
+                    "expires_in_seconds": 120})
+
+
+@app.post("/api/aep-protection/confirm")
+def api_aep_protection_confirm():
+    """Only an explicit two-stage dashboard action can send one PAPER stop."""
+    from paper_aep_protection import AepProtectionError, submit_approved_aep_stop
+    origin = request.headers.get("Origin", "")
+    if origin and origin.rstrip("/") != request.host_url.rstrip("/"):
+        return jsonify({"ok": False, "error": "Ugyldig opprinnelse"}), 403
+    payload = request.get_json(silent=True) or {}
+    preview = session.pop("aep_protection_preview", None)
+    if not isinstance(preview, dict) or not secrets.compare_digest(
+        str(payload.get("preview_nonce") or ""), str(preview.get("nonce") or "not-available")
+    ):
+        return jsonify({"ok": False, "error": "Hent ny forhåndsvisning før godkjenning"}), 409
+    if payload.get("confirmation") != "BEKREFT AEP PAPER STOP":
+        return jsonify({"ok": False, "error": "Ordren må bekreftes eksplisitt"}), 409
+    try:
+        from trading_bot import AlpacaRest, load_cfg
+        result = submit_approved_aep_stop(
+            AlpacaRest(load_cfg()), STATE_DIR, preview=preview,
+            stop_price=payload.get("stop_price"),
+        )
+    except AepProtectionError as exc:
+        return jsonify({"ok": False, "error": exc.message}), exc.code
+    except Exception:
+        return jsonify({"ok": False, "error": "Ordrestatus ukjent. Sjekk Alpaca PAPER."}), 503
+    return jsonify(result)
 
 
 @app.get("/api/control")
