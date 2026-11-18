@@ -733,6 +733,27 @@ class AlpacaRest:
             body["client_order_id"] = str(client_order_id)
         return self._req("POST", f"{self.cfg.trading_base}/v2/orders", json_body=body)
 
+    def submit_protective_stop(
+        self, symbol: str, qty: int, stop_price: float,
+        *, client_order_id: str,
+    ) -> Dict[str, Any]:
+        """Existing long-holding stop, PAPER only. Never an entry or LIVE order."""
+        if not self.cfg.paper or self.cfg.trading_base.rstrip("/") != "https://paper-api.alpaca.markets":
+            raise RuntimeError("PAPER_ONLY_BLOCK: protective stop denied")
+        if str(symbol).upper() != "AEP" or isinstance(qty, bool) or not isinstance(qty, int) or qty <= 0:
+            raise ValueError("Only whole AEP PAPER position stop allowed")
+        if not client_order_id.startswith("tbp-aep-"):
+            raise ValueError("Missing unique AEP stop client order identifier")
+        import math
+        if not math.isfinite(float(stop_price)) or float(stop_price) <= 0:
+            raise ValueError("invalid stop price")
+        body = {
+            "symbol": "AEP", "side": "sell", "type": "stop",
+            "qty": str(qty), "stop_price": self._order_price_str("AEP", stop_price),
+            "time_in_force": "gtc", "client_order_id": client_order_id,
+        }
+        return self._req("POST", f"{self.cfg.trading_base}/v2/orders", json_body=body)
+
     @staticmethod
     def _price_str(price: float) -> str:
         p = max(0.0001, float(price))

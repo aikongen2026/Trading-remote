@@ -2440,6 +2440,17 @@ HTML = r"""\n<!doctype html>
     <section class="card statusCard">
       <div class="cardHead"><div class="cardTitle"><span class="titleIcon">⌁</span><h2>Status</h2></div><span class="sub">Live systemstatus</span></div>
       <div id="authBanner" class="banner warn">Kobler til motoren…</div>
+      <div id="aepProtection" style="display:none;margin:8px 0;padding:9px;border:1px solid #b43d4a;border-radius:9px">
+        <b>AEP PAPER: kontroller og beskytt beholdningen</b>
+        <p style="font-size:12px">Stopordre kan fylles under stoppkursen ved raskt kursfall. Ingen ordre sendes uten bekreftelse.</p>
+        <button class="btn ghost" onclick="previewAepStop()">Forhåndsvis AEP stopordre</button>
+        <div id="aepReview" style="display:none;margin-top:8px">
+          <p id="aepInfo" style="font-size:12px"></p>
+          <label>Stoppkurs i USD <input id="aepStop" type="number" step="0.01" min="0.01" style="max-width:110px"></label>
+          <button id="aepConfirm" class="btn ghost" onclick="confirmAepStop()">Godkjenn PAPER stopordre</button>
+        </div>
+        <div id="aepFeedback" role="status" aria-live="polite" style="font-size:12px"></div>
+      </div>
       <div class="statusGrid">
         <div class="statusItem"><div class="statusLabel">Motor</div><div id="st_engine" class="statusVal">-</div></div>
         <div class="statusItem"><div class="statusLabel">Versjon</div><div id="st_version" class="statusVal mono small">-</div></div>
@@ -2524,6 +2535,36 @@ function safeHtml(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<
 async function toggleProfitTrades(days){const row=document.getElementById('profit_row_'+days),box=document.getElementById('profit_details_'+days);const opening=!box.classList.contains('open');box.classList.toggle('open',opening);row.classList.toggle('open',opening);if(!opening||profitTradeLoaded[days])return;box.innerHTML='<div class="profitLoading">Henter faktiske vinnende trades…</div>';try{const r=await apiFetch('/api/profit_trades?days='+days+'&ts='+Date.now());const d=await r.json();if(!r.ok||d.ok===false)throw new Error(d.detail||d.error||'ukjent feil');const trades=d.trades||[];profitTradeLoaded[days]=true;let h=`<div class="profitTradeSummary">${Number(d.winner_count||0)} vinnende trade${Number(d.winner_count||0)===1?'':'s'} • realisert brutto ${money(d.gross_profit_usd||0)}${Number(d.shown||0)<Number(d.winner_count||0)?' • viser '+Number(d.shown||0):''}</div>`;if(!trades.length){h+='<div class="profitEmpty">Ingen avsluttede vinnende trades funnet i perioden.</div>'}else{h+=trades.map(t=>`<div class="profitTrade"><div class="profitTradeTop"><span class="profitTradeSym">${safeHtml(t.symbol)}</span><span class="profitTradePnl">${money(t.gross_pnl_usd)} (${Number(t.gross_return_pct||0)>=0?'+':''}${Number(t.gross_return_pct||0).toFixed(2)}%)</span></div><div class="profitTradeMeta">${fmt(t.entry_price)} → ${fmt(t.exit_price)} • ${safeHtml(t.qty)} stk • holdt ${holdText(t.hold_sec)}<br>${safeHtml(String(t.exit_time||'').replace('T',' ').replace('Z',' UTC'))}</div></div>`).join('')}h+='<div class="profitTradeMeta" style="padding:6px 3px 0">Brutto P/L fra faktiske Alpaca fills. Gebyrer er ikke fordelt på enkelt-trades.</div>';box.innerHTML=h}catch(e){box.innerHTML='<div class="profitEmpty neg">Kunne ikke hente trade-detaljer: '+safeHtml(e.message||e)+'</div>'}}
 async function apiFetch(url,opt={}){const r=await fetch(url,{cache:'no-store',...opt});if(r.status===401){location.href='/login';throw new Error('login_required')}return r}
 async function postControl(url,payload){await apiFetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});await refresh(true)}
+let aepData=null,aepBusy=false;
+async function previewAepStop(){
+ const out=document.getElementById("aepFeedback");
+ aepData=null;document.getElementById("aepReview").style.display="none";
+ out.textContent="Kontrollerer AEP hos Alpaca PAPER";
+ try{
+  const r=await apiFetch("/api/aep-protection/preview",{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});
+  const data=await r.json();if(!r.ok||!data.ok)throw new Error(data.error||"Kan ikke hente PAPER-data");
+  aepData=data;
+  document.getElementById("aepInfo").textContent="AEP: "+data.qty+" aksjer. Markedskurs: "+data.current_price+" USD. Forslag: "+data.suggested_stop_price+" USD.";
+  document.getElementById("aepStop").value=data.suggested_stop_price;
+  document.getElementById("aepReview").style.display="block";
+  out.textContent="Ingen ordre sendt. Bekreft kursen før innsending.";
+ }catch(e){out.textContent=String(e.message||e)}
+}
+async function confirmAepStop(){
+ if(!aepData||aepBusy)return;
+ const price=document.getElementById("aepStop").value;
+ if(!confirm("Bekreft salg som GTC stopordre av "+aepData.qty+" AEP PAPER-aksjer ved "+price+" USD? Stopordre kan fylle lavere."))return;
+ aepBusy=true;document.getElementById("aepConfirm").disabled=true;
+ const out=document.getElementById("aepFeedback");
+ try{
+  const r=await apiFetch("/api/aep-protection/confirm",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({nonce:aepData.preview_nonce,stop_price:price,confirm:"BEKREFT AEP PAPER STOP"})});
+  const data=await r.json();if(!r.ok||!data.ok)throw new Error(data.error||"Ordrestatus ukjent");
+  out.textContent="Alpaca PAPER har mottatt AEP stopordre for "+data.qty+" aksjer ved "+data.stop_price+" USD. Ordre-ID: "+data.order_id;
+  document.getElementById("aepReview").style.display="none";
+  await refresh(true);
+ }catch(e){out.textContent=String(e.message||e)+" Sjekk PAPER-kontoen før nytt forsøk."}
+ finally{aepData=null;aepBusy=false;document.getElementById("aepConfirm").disabled=false;document.getElementById("aepReview").style.display="none"}
+}
 async function startTrading(){await postControl('/api/control',{armed:true,paused:false,kill:false})}
 async function stopTrading(){await postControl('/api/control',{armed:false,paused:true})}
 async function emergencyStop(){if(confirm('Aktivere NØDSTOPP? Nye handler blokkeres umiddelbart.'))await postControl('/api/control',{armed:false,paused:true,kill:true})}
@@ -2611,7 +2652,7 @@ document.getElementById('st_strategy').textContent=currentStrategy===selectedStr
   const select=document.getElementById('strategySel');
   const saved=s.selected_strategy_mode||s.strategy_mode||'scalp';
   if(['scalp','hype','trend','cross'].includes(saved))select.value=saved;
-}document.getElementById('paperTests').style.display=s.paper===false?'none':'block';['auto','stocks','crypto'].forEach(m=>document.getElementById('m_'+m).classList.toggle('active',(s.market_mode||'auto')===m));const ab=document.getElementById('authBanner');if(unverified.length){ab.className='banner bad';ab.textContent='ADVARSEL: '+unverified.map(sym=>sym+' ('+String(unmanaged[sym]?.protection_status||'ukjent')+')').join(', ')+'. Posisjonen styres ikke automatisk av boten. Sjekk Alpaca PAPER; ingen ordre er lagt inn.';}else if(unmanagedSymbols.length){ab.className='banner warn';ab.textContent='Ukjent aksjeposisjon: '+unmanagedSymbols.join(', ')+'. Synlig stopordre er registrert, men boten forvalter den ikke.';}else if(s.auth_ok===false){ab.className='banner bad';ab.textContent='Alpaca avviser API-nøklene.'}else if(live&&cr.render&&cr.always_on_expected===false){ab.className='banner warn';ab.textContent='Trading kjører, men Render FREE kan sovne når dashboardet lukkes. Oppgrader Compute til 0.5c-512mb for ekte 24/7.'}else if(live){ab.className='banner good';ab.textContent=running?'Motor ONLINE – trading er STARTET.':'Motor ONLINE – trading er STOPPET/PAUSET.'}else{ab.className='banner warn';ab.textContent='Motoren starter eller restarter…'}renderSymbols(s.symbols||{});renderOrders(s.orders||[]);const lo=(s.orders||[])[0]?.id||'-';document.getElementById('lastOrderId').textContent=lo}catch(e){document.getElementById('liveDot').className='dot bad';document.getElementById('liveText').textContent='OFFLINE'}}
+}document.getElementById('paperTests').style.display=s.paper===false?'none':'block';['auto','stocks','crypto'].forEach(m=>document.getElementById('m_'+m).classList.toggle('active',(s.market_mode||'auto')===m));const aepPanel=document.getElementById('aepProtection');if(aepPanel)aepPanel.style.display=unmanaged.AEP?.protection_status==='NO_STOP_ORDER'?'block':'none';const ab=document.getElementById('authBanner');if(unverified.length){ab.className='banner bad';ab.textContent='ADVARSEL: '+unverified.map(sym=>sym+' ('+String(unmanaged[sym]?.protection_status||'ukjent')+')').join(', ')+'. Posisjonen styres ikke automatisk av boten. Sjekk Alpaca PAPER; ingen ordre er lagt inn.';}else if(unmanagedSymbols.length){ab.className='banner warn';ab.textContent='Ukjent aksjeposisjon: '+unmanagedSymbols.join(', ')+'. Synlig stopordre er registrert, men boten forvalter den ikke.';}else if(s.auth_ok===false){ab.className='banner bad';ab.textContent='Alpaca avviser API-nøklene.'}else if(live&&cr.render&&cr.always_on_expected===false){ab.className='banner warn';ab.textContent='Trading kjører, men Render FREE kan sovne når dashboardet lukkes. Oppgrader Compute til 0.5c-512mb for ekte 24/7.'}else if(live){ab.className='banner good';ab.textContent=running?'Motor ONLINE – trading er STARTET.':'Motor ONLINE – trading er STOPPET/PAUSET.'}else{ab.className='banner warn';ab.textContent='Motoren starter eller restarter…'}renderSymbols(s.symbols||{});renderOrders(s.orders||[]);const lo=(s.orders||[])[0]?.id||'-';document.getElementById('lastOrderId').textContent=lo}catch(e){document.getElementById('liveDot').className='dot bad';document.getElementById('liveText').textContent='OFFLINE'}}
 async function refreshLoop(){await refresh(false);setTimeout(refreshLoop,dashboardRefreshMs)}refreshLoop();
 </script></body></html>\n"""
 
@@ -2651,6 +2692,43 @@ def healthz():
     engine = st.get("engine_state") if isinstance(st, dict) else None
     ok = engine not in {"AUTH_ERROR", "CRASHED"}
     return jsonify({"ok": bool(ok), "engine_state": engine or "STARTING", "status_age_sec": age, "version": BOT_VERSION, "cloud_runtime": st.get("cloud_runtime", {}), "broker_history": st.get("broker_history", {}), "storage_backup": st.get("storage_backup", {})}), (200 if ok else 503)
+
+
+@app.post("/api/aep-protection/preview")
+def aep_protection_preview():
+    from paper_aep_protection import AepProtectionError, fresh_aep_unprotected
+    try:
+        from trading_bot import AlpacaRest, load_cfg
+        info = fresh_aep_unprotected(AlpacaRest(load_cfg()))
+    except AepProtectionError as exc:
+        return jsonify({"ok": False, "error": exc.message}), exc.code
+    except Exception:
+        return jsonify({"ok": False, "error": "Kan ikke hente Alpaca PAPER-data"}), 503
+    nonce = secrets.token_urlsafe(22)
+    session["aep_stop_preview"] = {"nonce": nonce, "qty": info["qty"], "current_price": info["current_price"], "expires": time.time()+120}
+    return jsonify({"ok": True, **info, "preview_nonce": nonce})
+
+
+@app.post("/api/aep-protection/confirm")
+def aep_protection_confirm():
+    from paper_aep_protection import AepProtectionError, submit_approved_aep_stop
+    origin = request.headers.get("Origin", "")
+    if origin and origin.rstrip("/") != request.host_url.rstrip("/"):
+        return jsonify({"ok": False, "error": "Ugyldig opprinnelse"}), 403
+    data = request.get_json(silent=True) or {}
+    preview = session.pop("aep_stop_preview", None)
+    if not isinstance(preview, dict) or not secrets.compare_digest(str(data.get("nonce") or ""), str(preview.get("nonce") or "-")):
+        return jsonify({"ok": False, "error": "Hent en ny forhåndsvisning"}), 409
+    if data.get("confirm") != "BEKREFT AEP PAPER STOP":
+        return jsonify({"ok": False, "error": "Bekreftelse mangler"}), 409
+    try:
+        from trading_bot import AlpacaRest, load_cfg
+        result = submit_approved_aep_stop(AlpacaRest(load_cfg()), STATE_DIR, preview=preview, stop_price=data.get("stop_price"))
+    except AepProtectionError as exc:
+        return jsonify({"ok": False, "error": exc.message}), exc.code
+    except Exception:
+        return jsonify({"ok": False, "error": "Ordrestatus uavklart; sjekk PAPER-kontoen"}), 503
+    return jsonify(result)
 
 
 @app.get("/api/control")
