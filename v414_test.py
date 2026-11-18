@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 
 import requests
 import corporate_backoff as cb
-from render_usage_guard import RenderUsageGuard, policy_for_percent
+from render_usage_guard import RenderUsageGuard, policy_for_percent, throttle_limits
 from runtime_audit import storage_health
 from saxo_sim import SaxoSimEngine, SaxoSimError
 from trading_bot import AlpacaRest, AlpacaApiError
@@ -76,7 +76,7 @@ class StabilityTests(unittest.TestCase):
         self.assertEqual(cb._failures, 0)
 
     def test_render_boundaries(self):
-        for pct, expected in [(59.99, 'NORMAL'), (60, 'WARN'), (75, 'SAVE'), (85, 'STRONG'), (89.99, 'STRONG'), (90, 'STRONG'), (95, 'HARD'), (100, 'OVER')]:
+        for pct, expected in [(54.99, 'NORMAL'), (55, 'WARN'), (65, 'SAVE'), (70, 'STRONG'), (74.99, 'STRONG'), (75, 'HARD'), (85, 'HARD'), (100, 'OVER')]:
             self.assertEqual(policy_for_percent(pct), expected)
             Path(self.tmp.name, 'render_usage.json').write_text(json.dumps({'percent': pct}))
             self.assertEqual(self.sx._render_allows_norway(), pct < 90)
@@ -92,7 +92,21 @@ class StabilityTests(unittest.TestCase):
         guard.session = Mock()
         guard.session.get.side_effect = requests.Timeout()
         status = guard.snapshot()
-        self.assertEqual((status['percent'], status['policy']), (85, 'STRONG'))
+        self.assertEqual((status['percent'], status['policy']), (85, 'HARD'))
+
+    def test_bandwidth_guard_does_not_relax_with_environment(self):
+        with patch.dict(os.environ, {
+            'RENDER_USAGE_HARD_PCT': '98',
+            'RENDER_USAGE_STRONG_PCT': '94',
+        }):
+            self.assertEqual(policy_for_percent(76), 'HARD')
+            self.assertEqual(policy_for_percent(71), 'STRONG')
+
+    def test_bandwidth_polling_guards_open_crypto_positions(self):
+        self.assertEqual(throttle_limits('HARD'), (60, 600))
+        self.assertEqual(throttle_limits('HARD', has_crypto_position=True), (5, 60))
+        self.assertEqual(throttle_limits('SAVE'), (12, 90))
+        self.assertEqual(throttle_limits('NORMAL'), (1, 1))
 
     def test_render_discovery_excludes_other_workspace(self):
         os.environ["RENDER_SERVICE_ID"] = "srv-current"
