@@ -17,6 +17,7 @@ class FakePaper:
     cfg = SimpleNamespace(paper=True, trading_base="https://paper-api.alpaca.markets")
 
     def __init__(self, qty=2, stop_orders=None, current_price=126.00):
+        self.cfg = SimpleNamespace(paper=True, trading_base="https://paper-api.alpaca.markets")
         self.qty = qty
         self.stop_orders = stop_orders if stop_orders is not None else []
         self.price = current_price
