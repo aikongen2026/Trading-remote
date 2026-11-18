@@ -1,0 +1,21 @@
+name: Unknown stock protection diagnostics
+on:
+  pull_request:
+    paths:
+      - 'runtime_audit.py'
+      - 'trading_bot.py'
+      - 'control_server.py'
+      - 'tests/test_unmanaged_stock_protection.py'
+      - '.github/workflows/unmanaged-stock-protection.yml'
+jobs:
+  read-only-protection:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Existing dependencies
+        run: pip install -r requirements.txt
+      - name: Unknown position and stop-order coverage tests
+        run: python -m unittest discover -s tests -p 'test_unmanaged_stock_protection.py' -v
