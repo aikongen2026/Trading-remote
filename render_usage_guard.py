@@ -16,11 +16,11 @@ contains several bandwidth-consuming services in the same workspace.
 
 Optional:
   RENDER_BANDWIDTH_CAP_GB=5
-  RENDER_USAGE_WARN_PCT=60
-  RENDER_USAGE_SAVE_PCT=75
-  RENDER_USAGE_STRONG_PCT=85
-  RENDER_USAGE_HARD_PCT=95
-  RENDER_USAGE_CHECK_SEC=900
+  RENDER_USAGE_WARN_PCT=55 (upper bound)
+  RENDER_USAGE_SAVE_PCT=65 (upper bound)
+  RENDER_USAGE_STRONG_PCT=73 (upper bound)
+  RENDER_USAGE_HARD_PCT=82 (upper bound)
+  RENDER_USAGE_CHECK_SEC=300 (capped at 600)
 """
 from __future__ import annotations
 
@@ -98,10 +98,13 @@ def _to_gb(value: float, unit: str) -> float:
 def policy_for_percent(percent: float, configured: bool = True) -> str:
     if not configured:
         return "UNMETERED"
-    warn = _float_env("RENDER_USAGE_WARN_PCT", 60.0)
-    save = _float_env("RENDER_USAGE_SAVE_PCT", 75.0)
-    strong = _float_env("RENDER_USAGE_STRONG_PCT", 85.0)
-    hard = _float_env("RENDER_USAGE_HARD_PCT", 95.0)
+    # Earlier protective limits are deliberate: 5 GB is shared by every
+    # service and Render does not offer a bandwidth-spend hard stop on Hobby.
+    # Environment values may tighten these thresholds, never relax them.
+    warn = min(_float_env("RENDER_USAGE_WARN_PCT", 55.0), 55.0)
+    save = min(_float_env("RENDER_USAGE_SAVE_PCT", 65.0), 65.0)
+    strong = min(_float_env("RENDER_USAGE_STRONG_PCT", 73.0), 73.0)
+    hard = min(_float_env("RENDER_USAGE_HARD_PCT", 82.0), 82.0)
     p = max(0.0, float(percent))
     if p >= 100.0:
         return "OVER"
@@ -114,6 +117,27 @@ def policy_for_percent(percent: float, configured: bool = True) -> str:
     if p >= warn:
         return "WARN"
     return "NORMAL"
+
+
+def throttle_limits(policy: str, has_crypto_position: bool = False) -> tuple[int, int]:
+    """Minimum loop/one-minute-bar refresh seconds under a shared 5 GB cap.
+
+    Active crypto holdings retain frequent price checks so existing exits
+    are not sacrificed merely to save traffic. New entries are gated separately.
+    """
+    mode = str(policy or "").upper()
+    limits = {
+        "WARN": (5, 30),
+        "SAVE": (12, 90),
+        "STRONG": (25, 180),
+        "HARD": (60, 600),
+        "OVER": (60, 600),
+    }
+    minimum_poll, minimum_bar = limits.get(mode, (1, 1))
+    if has_crypto_position and mode in limits:
+        minimum_poll = min(minimum_poll, 5)
+        minimum_bar = min(minimum_bar, 60)
+    return minimum_poll, minimum_bar
 
 
 def read_usage(path: str | os.PathLike[str]) -> Dict[str, Any]:
@@ -135,7 +159,7 @@ class RenderUsageGuard:
         self.resources = _configured_resource_ids()
         self.workspace_owner_id = None
         self.cap_gb = max(0.1, _float_env("RENDER_BANDWIDTH_CAP_GB", 5.0))
-        self.check_sec = max(300, _int_env("RENDER_USAGE_CHECK_SEC", 900))
+        self.check_sec = max(300, min(600, _int_env("RENDER_USAGE_CHECK_SEC", 300)))
 
     @property
     def configured(self) -> bool:
@@ -243,10 +267,10 @@ class RenderUsageGuard:
             "cap_gb": round(self.cap_gb, 3),
             "resources": list(self.resources),
             "scope": "configured_services" if self.resources else "current_workspace_services",
-            "warn_pct": _float_env("RENDER_USAGE_WARN_PCT", 60.0),
-            "save_pct": _float_env("RENDER_USAGE_SAVE_PCT", 75.0),
-            "strong_pct": _float_env("RENDER_USAGE_STRONG_PCT", 85.0),
-            "hard_pct": _float_env("RENDER_USAGE_HARD_PCT", 95.0),
+            "warn_pct": min(_float_env("RENDER_USAGE_WARN_PCT", 55.0), 55.0),
+            "save_pct": min(_float_env("RENDER_USAGE_SAVE_PCT", 65.0), 65.0),
+            "strong_pct": min(_float_env("RENDER_USAGE_STRONG_PCT", 73.0), 73.0),
+            "hard_pct": min(_float_env("RENDER_USAGE_HARD_PCT", 82.0), 82.0),
             "checked_at": _utc_now_iso(),
             "month_start": _month_start_iso(),
             "auto_downgrade": False,
@@ -288,7 +312,11 @@ class RenderUsageGuard:
             base.setdefault("used_gb", None)
             base.setdefault("percent", None)
             base.setdefault("remaining_gb", None)
-            base.setdefault("policy", "METER_ERROR")
+            base.setdefault("policy", "HARD")
+            # An unavailable meter must never be mistaken for available
+            # bandwidth. Throttle immediately, even when the old policy was
+            # less restrictive. Do not reset consumption or the persisted DB.
+            base["policy"] = "HARD"
             base["source"] = "render_api_stale"
             base["error"] = f"{type(exc).__name__}: {str(exc)[:240]}"
         return base
