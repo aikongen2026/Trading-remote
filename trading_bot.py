@@ -1832,15 +1832,6 @@ def main() -> None:
             refresh_bars_every_sec = int(control.get("refresh_bars_every_sec", max(10, min(60, timeframe_to_seconds(timeframe) // 2))))
             refresh_bars_every_sec = max(1, refresh_bars_every_sec)
             refresh_bars_every_sec = max(refresh_bars_every_sec, usage_bar_floor)
-            if has_crypto_exposure:
-                # Exit surveillance must retain recent market bars while any
-                # crypto asset is held. Never loosen risk/execution gates.
-                _, exposure_bar_floor = throttle_limits(
-                    render_usage_policy, has_crypto_position=True
-                )
-                refresh_bars_every_sec = min(
-                    refresh_bars_every_sec, max(10, exposure_bar_floor)
-                )
 
             stocks = symbol_universe(control)
             crypto_symbols = crypto_universe(control)
@@ -1982,6 +1973,12 @@ def main() -> None:
                     render_usage_policy, has_crypto_position=True
                 )
                 poll_sec = min(poll_sec, max(1, exposure_poll_floor))
+                _, exposure_bar_floor = throttle_limits(
+                    render_usage_policy, has_crypto_position=True
+                )
+                refresh_bars_every_sec = min(
+                    refresh_bars_every_sec, max(10, exposure_bar_floor)
+                )
 
             orders_raw = cached_orders.get("value") or []
             if isinstance(orders_raw, list):
