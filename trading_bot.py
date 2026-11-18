@@ -39,7 +39,7 @@ from adaptive_edge import AdaptiveRouter, ShadowLab, dynamic_universe, sector_co
 from runtime_audit import RuntimeAudit, EntryConfirmation, supervise_stocks, epoch
 from broker_history import BrokerHistory
 from state_storage import resolve_state_dir, health as backup_health
-from render_usage_guard import read_usage
+from render_usage_guard import read_usage, throttle_limits
 
 try:
     import tkinter as tk
@@ -1716,12 +1716,11 @@ def main() -> None:
                 render_usage_guard_enabled
                 and _usage_rank.get(render_usage_policy, 0) >= _usage_rank[_block_at]
             )
-            if render_usage_policy == "SAVE":
-                poll_sec = max(poll_sec, 2)
-            elif render_usage_policy == "STRONG":
-                poll_sec = max(poll_sec, 3)
-            elif render_usage_policy in {"HARD", "OVER"}:
-                poll_sec = max(poll_sec, 5)
+            # A conservative, adjustable throttling floor determined from
+            # workspace-level Render usage. Re-evaluated after broker position
+            # cache is refreshed: no crypto exposure -> far fewer API cycles.
+            usage_poll_floor, usage_bar_floor = throttle_limits(render_usage_policy)
+            poll_sec = max(poll_sec, usage_poll_floor)
 
             stock_qty = float(control.get("stock_qty", 1) or 1)
 
@@ -1832,12 +1831,7 @@ def main() -> None:
             # bars trenger ikke refetches hvert sekund siden 1Min bars ikke endrer seg meningsfullt like ofte.
             refresh_bars_every_sec = int(control.get("refresh_bars_every_sec", max(10, min(60, timeframe_to_seconds(timeframe) // 2))))
             refresh_bars_every_sec = max(1, refresh_bars_every_sec)
-            if render_usage_policy == "SAVE":
-                refresh_bars_every_sec = max(refresh_bars_every_sec, 20)
-            elif render_usage_policy == "STRONG":
-                refresh_bars_every_sec = max(refresh_bars_every_sec, 30)
-            elif render_usage_policy in {"HARD", "OVER"}:
-                refresh_bars_every_sec = max(refresh_bars_every_sec, 60)
+            refresh_bars_every_sec = max(refresh_bars_every_sec, usage_bar_floor)
 
             stocks = symbol_universe(control)
             crypto_symbols = crypto_universe(control)
@@ -1964,6 +1958,27 @@ def main() -> None:
 
             pos_raw = cached_positions.get("value") or []
             positions_map = positions_to_map(pos_raw if isinstance(pos_raw, list) else [])
+            # Preserve responsive exits for existing crypto holdings, while
+            # allowing aggressive bandwidth saving when no crypto is held.
+            has_crypto_exposure = any(
+                float(_pos.get("qty") or 0) > 0 and (
+                    str(_pos.get("asset_class") or "").lower() == "crypto"
+                    or str(_pos.get("exchange") or "").upper() == "CRYPTO"
+                    or "/" in str(_pos.get("symbol") or "")
+                )
+                for _pos in (pos_raw if isinstance(pos_raw, list) else [])
+            )
+            if has_crypto_exposure:
+                exposure_poll_floor, _ = throttle_limits(
+                    render_usage_policy, has_crypto_position=True
+                )
+                poll_sec = min(poll_sec, max(1, exposure_poll_floor))
+                _, exposure_bar_floor = throttle_limits(
+                    render_usage_policy, has_crypto_position=True
+                )
+                refresh_bars_every_sec = min(
+                    refresh_bars_every_sec, max(10, exposure_bar_floor)
+                )
 
             orders_raw = cached_orders.get("value") or []
             if isinstance(orders_raw, list):
@@ -3341,12 +3356,14 @@ def main() -> None:
                 poll_sec = max(1, int(control.get("poll_sec", 2)))
             _usage = read_usage(os.path.join(STATE_DIR, "render_usage.json"))
             _policy = str((_usage or {}).get("policy") or "UNMETERED").upper()
-            if _policy == "SAVE":
-                poll_sec = max(poll_sec, 2)
-            elif _policy == "STRONG":
-                poll_sec = max(poll_sec, 3)
-            elif _policy in {"HARD", "OVER"}:
-                poll_sec = max(poll_sec, 5)
+            # Keep the final sleep aligned with actual loop logic. Previously
+            # the initial throttle was silently overwritten at loop end.
+            _has_crypto = bool(locals().get("has_crypto_exposure", False))
+            # Broker data failure must not trigger a long idle interval.
+            if not bool(locals().get("broker_fresh", False)):
+                _has_crypto = True
+            usage_sleep_floor, _ = throttle_limits(_policy, has_crypto_position=_has_crypto)
+            poll_sec = max(poll_sec, usage_sleep_floor)
         except Exception:
             poll_sec = 2
 
