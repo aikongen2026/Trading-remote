@@ -1844,11 +1844,9 @@ def main() -> None:
                 except Exception as e:
                     notes.append(f"Test-order handler feilet: {e}")
 
-            try:
-                safe_write_json(CONTROL_PATH, control)
-            except Exception:
-                pass
-
+            # The dashboard is the writer of control.json. Never write this
+            # loop's stale snapshot back: that used to undo a newly selected
+            # strategy if the user clicked while a long cycle was running.
             # Konto/posisjoner/ordrer caches. Markedsdata kan fortsatt skannes hvert sekund,
             # men vi bruker ikke opp REST-kall på uforandret kontostatus.
             day_pnl = 0.0
