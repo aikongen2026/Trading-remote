@@ -1565,9 +1565,17 @@ HTML = r"""\n<!doctype html>
     .hudQuickPanel{position:fixed;z-index:85;top:75px;left:68px;width:min(390px,calc(100vw - 85px));max-height:75vh;overflow:auto;padding:15px;background:linear-gradient(180deg,#041c35,#020f1e);color:#e6f8ff;border:1px solid #29cfff;border-radius:12px;box-shadow:0 12px 35px #000b;font:12px system-ui;line-height:1.5}
     .hudQuickTop{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;font-size:15px}
     .hudQuickTop button{background:transparent;border:1px solid #2a789e;border-radius:7px;color:#b9f1ff;cursor:pointer;padding:3px 9px}
-    .hudQuickPanel table{width:100%;border-collapse:collapse}
-    .hudQuickPanel td{padding:5px 3px;border-bottom:1px solid #174362;overflow-wrap:anywhere}
-    .hudQuickPanel td:last-child{text-align:right;max-width:230px}
+    /* A status popover is not a trading grid: avoid global table min-width rules. */
+    #hudQuickPanel{box-sizing:border-box;width:min(460px,calc(100vw - 82px));overflow-x:hidden}
+    #hudQuickPanel #hudQuickBody{width:100%;min-width:0;overflow-x:hidden}
+    #hudQuickPanel .hudDataList{display:grid;grid-template-columns:minmax(0,1fr);min-width:0;width:100%}
+    #hudQuickPanel .hudDataRow{display:grid;grid-template-columns:minmax(105px,36%) minmax(0,1fr);gap:12px;align-items:start;min-width:0;padding:9px 0;border-bottom:1px solid #174362}
+    #hudQuickPanel .hudDataLabel{min-width:0;color:#9edaf0;font-weight:700;overflow-wrap:anywhere}
+    #hudQuickPanel .hudDataValue{min-width:0;width:auto;max-width:100%;text-align:left;color:#effbff;white-space:normal;overflow-wrap:anywhere;word-break:break-word;user-select:text}
+    #hudQuickPanel .hudDataValue.warn{color:#ffbf83}
+    #hudQuickPanel .hudDataValue.ok{color:#6cf1c8}
+    #hudQuickPanel .hudPanelNote{margin:12px 0 0;padding:10px 11px;border:1px solid #215371;border-radius:8px;background:#08263b;color:#b5dcf0;font-size:12px;overflow-wrap:anywhere}
+    @media(max-width:480px){#hudQuickPanel{left:12px;top:64px;width:calc(100vw - 24px)}#hudQuickPanel .hudDataRow{grid-template-columns:minmax(90px,39%) minmax(0,1fr);gap:7px}}
     /* ===== FORSLAG 4 EXACT DESKTOP V4 - VISUAL/LAYOUT ONLY ===== */
     html,body{
       width:100vw !important;
@@ -2610,7 +2618,8 @@ function hudNavigate(target){
     document.getElementById('hudQuickTitle').textContent=target==='market'?'Markedsdata':'AI-læring';
     const st=hudLatestStatus||{};
     const rows=[];
-    const add=(label,value)=>rows.push('<tr><td>'+safeHtml(label)+'</td><td>'+safeHtml(value??'-')+'</td></tr>');
+    let footerNote='';
+    const add=(label,value,level='')=>rows.push('<div class="hudDataRow"><span class="hudDataLabel">'+safeHtml(label)+'</span><span class="hudDataValue '+(level==='warn'?'warn':level==='ok'?'ok':'')+'">'+safeHtml(value??'-')+'</span></div>');
     if(target==='market'){
       const health=st.intelligence?.source_health||{};
       add('Aksjefeed',st.market_data?.stock_feed);
@@ -2619,9 +2628,15 @@ function hudNavigate(target){
       add('Nyheter',health.alpaca_news);
       add('GDELT',health.gdelt);
       add('SEC',health.sec);
-      const symbols=Object.values(st.symbols||{}).filter(x=>x.market==='CRYPTO');
-      add('Krypto: gamle kurser',symbols.filter(x=>String(x.action||'').startsWith('QUOTE_STALE')).length+' / '+symbols.length);
-      add('Status',st.engine_state);
+      const symbols=Object.entries(st.symbols||{}).filter(([sym,x])=>x?.market==='CRYPTO');
+      const stale=symbols.filter(([sym,x])=>String(x.action||'').startsWith('QUOTE_STALE'));
+      add('Krypto: gamle kurser',stale.length+' av '+symbols.length,stale.length?'warn':'ok');
+      add('Status',st.engine_state,st.engine_state==='RUNNING'?'ok':'warn');
+      const degraded=Object.entries({GDELT:health.gdelt,SEC:health.sec}).filter(([key,value])=>String(value||'').startsWith('DEGRADED'));
+      const notes=[];
+      if(degraded.length)notes.push('Eksterne datakilder har feil og forsøkes automatisk på nytt etter pause. Nyhetsscoren nedvekter usikre kilder.');
+      if(stale.length)notes.push('Ferskhetskravet for krypto er ikke oppfylt for '+stale.length+' symboler. Tilkoblet strøm er ikke det samme som ferske kurser. Sikkerhetssperren for nye handler beholdes.');
+      if(notes.length)footerNote='<p class="hudPanelNote">'+safeHtml(notes.join(' '))+'</p>';
     }else{
       const diag=st.entry_diagnostics||{};
       const shadow=st.adaptive_edge?.shadow?.models||{};
@@ -2634,7 +2649,7 @@ function hudNavigate(target){
       }
       add('Læringsdatabase',st.learning_health?.last_error||'Ingen rapportert feil');
     }
-    document.getElementById('hudQuickBody').innerHTML='<table>'+rows.join('')+'</table>';
+    document.getElementById('hudQuickBody').innerHTML='<div class="hudDataList">'+rows.join('')+'</div>'+footerNote;
   }
 }
 document.addEventListener('keydown',event=>{if(event.key==='Escape')hudClose()});
