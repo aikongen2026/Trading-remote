@@ -5,6 +5,7 @@ are never restored from a stale backup. Broker reconciliation owns live state.
 """
 from __future__ import annotations
 import gzip
+import shutil
 import hashlib
 import json
 import os
@@ -148,6 +149,12 @@ class StateBackup:
                 path=self.state/name
                 if not path.is_file():
                     continue
+                from resource_policy import disk_budget
+                budget = disk_budget(self.state, refresh=True)
+                # Keep old verified snapshots when a new staging copy would
+                # consume the disk reserve. Do not resize or delete evidence.
+                if path.stat().st_size > MAX_BYTES or budget['remaining_mb'] * 1024 * 1024 < path.stat().st_size + 8 * 1024 * 1024:
+                    raise ValueError('Snapshot storage budget')
                 with tempfile.TemporaryDirectory(dir=target_dir) as tmpdir:
                     staged=Path(tmpdir)/name
                     with closing(sqlite3.connect('file:'+path.as_posix()+'?mode=ro',uri=True,timeout=5)) as src, closing(sqlite3.connect(str(staged))) as dst:
@@ -157,10 +164,10 @@ class StateBackup:
                     with closing(sqlite3.connect(str(staged))) as check:
                         if check.execute('PRAGMA integrity_check').fetchone()[0]!='ok':
                             raise ValueError('Snapshot integrity failed')
-                    raw=staged.read_bytes()
                     out=target_dir/(name+'.'+stamp+'.gz')
                     pending=out.with_suffix(out.suffix+'.tmp')
-                    pending.write_bytes(gzip.compress(raw,compresslevel=1))
+                    with staged.open('rb') as source, gzip.open(pending, 'wb', compresslevel=1) as dest:
+                        shutil.copyfileobj(source, dest, length=256*1024)
                     os.replace(pending,out)
                     names.append(out.name)
             if not names:

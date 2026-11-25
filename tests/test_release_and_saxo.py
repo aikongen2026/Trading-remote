@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import patch
 
 from app_version import runtime_version
+from pathlib import Path
 from saxo_sim import SaxoSimEngine
 from saxo_oauth import register_saxo_oauth
 from flask import Flask
@@ -14,7 +15,7 @@ class ReleaseAndSaxoTests(unittest.TestCase):
     def test_each_deploy_has_distinct_version(self):
         self.assertNotEqual(runtime_version("0123456789abcdef"),
                             runtime_version("fedcba9876543210"))
-        self.assertTrue(runtime_version("0123456789abcdef").startswith("4.16.0+"))
+        self.assertTrue(runtime_version("0123456789abcdef").startswith(Path(__file__).resolve().parents[1].joinpath("VERSION.txt").read_text().strip()+"+"))
 
     def test_saxo_connected_oauth_does_not_redirect_or_rotate_token(self):
         with tempfile.TemporaryDirectory() as tmp:

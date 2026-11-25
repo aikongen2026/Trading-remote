@@ -67,6 +67,9 @@ class RuntimeAudit:
     def capture_bars(self, bars_by_symbol, feed):
         if time.time() - self.last_capture < 60:
             return
+        from resource_policy import telemetry_allowed
+        if not telemetry_allowed(Path(self.path).parent):
+            return
         try:
             with closing(sqlite3.connect(self.path, timeout=3)) as db, db:
                 rows = [(s, str(b.get('t') or b.get('timestamp')), feed, json.dumps(b))
