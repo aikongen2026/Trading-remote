@@ -237,6 +237,8 @@ def comparison(bars, *, fee_bps=25, spread_bps=10, slippage_bps=4, now=None):
         result['state'] = 'WAIT_HISTORY'
         return result
     split = clean[int(len(clean) * .7)]['t']
+    completed_hours = len(aggregate(clean, 60))
+    result['completed_hour_bars'] = completed_hours
     for strategy in STRATEGIES:
         for timeframe_minutes, execution, exit_mode in ((tf, ex, exit) for tf in (5, 15) for ex, exit in (('market', 'fixed'), ('resting_limit', 'fixed'), ('market', 'atr_trail'))):
             trades, missed = replay(clean, strategy, fee_bps=fee_bps, spread_bps=spread_bps,
@@ -245,6 +247,9 @@ def comparison(bars, *, fee_bps=25, spread_bps=10, slippage_bps=4, now=None):
             holdout = [t for t in trades if t['entry_at'] >= split]
             result['models'].append({'strategy': strategy, 'execution': execution, 'exit_mode': exit_mode, 'timeframe_minutes': timeframe_minutes,
                                      'development': metrics(development), 'holdout': metrics(holdout),
+                                     'data_ready': len(aggregate(clean, timeframe_minutes)) >= 32 and (strategy not in {'trend_pullback', 'donchian_breakout'} or completed_hours >= 51),
+                                     'completed_hour_bars': completed_hours,
+                                     'required_hour_bars': 51 if strategy in {'trend_pullback', 'donchian_breakout'} else 0,
                                      'missed_limits': missed, 'sufficient_samples': len(holdout) >= 30,
                                      'cost_bps': 2 * fee_bps + spread_bps + slippage_bps})
     result['state'] = 'EVALUATED'

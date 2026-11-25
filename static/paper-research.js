@@ -35,7 +35,7 @@ async function showResearch() {
       const tr = document.createElement('tr'), h = model.holdout;
       const labels = {sma_reference:'SMA-referanse',trend_pullback:'Trend + tilbakefall',donchian_breakout:'Donchian-brudd',range_reversion:'Sideveis marked'};
       const label = (labels[model.strategy] || model.strategy) + ' ' + model.timeframe_minutes + 'm / ' + (model.execution === 'market' ? 'marked' : 'limitmodell') + ' / ' + (model.exit_mode === 'fixed' ? 'fast mål' : 'ATR-trailing');
-      for (const text of [symbol, label, String(h.trades) + (model.sufficient_samples ? '' : ' (lite utvalg)'),
+      for (const text of [symbol, label, !model.data_ready ? 'Samler historikk' + (model.required_hour_bars ? ' (' + model.completed_hour_bars + '/' + model.required_hour_bars + ' timer)' : '') : String(h.trades) + (model.sufficient_samples ? '' : ' (lite utvalg)'),
         h.net_expectancy_bps == null ? '—' : (h.net_expectancy_bps / 100).toFixed(3) + '%',
         h.profit_factor == null ? '—' : h.profit_factor.toFixed(2), h.max_drawdown_pct.toFixed(3) + '%']) researchCell(tr, text);
       body.appendChild(tr); shown++;
