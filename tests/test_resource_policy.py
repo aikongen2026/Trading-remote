@@ -14,6 +14,14 @@ from trading_bot import BarsCache
 
 
 class StreamTests(unittest.TestCase):
+    def test_stream_without_broker_timestamp_is_not_stamped_as_fresh(self):
+        from intelligence_engine import IntelligenceEngine
+        obj = IntelligenceEngine.__new__(IntelligenceEngine)
+        obj.lock = threading.Lock()
+        obj.live_quotes = {}
+        obj._consume_stream_message({'T':'q', 'S':'BTC/USD', 'bp':99, 'ap':100}, 'CRYPTO')
+        self.assertEqual(obj.live_quotes, {})
+
     def test_fresh_stream_quotes_do_not_make_rest_calls(self):
         rest = Mock()
         engine = SimpleNamespace(lock=threading.Lock(), live_quotes={

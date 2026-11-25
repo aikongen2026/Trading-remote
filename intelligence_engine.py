@@ -820,6 +820,8 @@ class IntelligenceEngine:
         sym = str(m.get("S") or "").upper()
         if not sym:
             return
+        if typ in {"q", "b", "u"} and not parse_ts(m.get("t")):
+            return  # a missing broker timestamp must never become a fresh quote
         key = normalize_symbol(sym)
         if typ == "q":
             snap = {

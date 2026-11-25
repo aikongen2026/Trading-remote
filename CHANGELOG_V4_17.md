@@ -81,7 +81,7 @@ orders, and its displayed 0.05% taker fee is not substituted for Alpaca's 0.25%.
 
 ## Validation
 
-86 standard-library unit tests, 61 existing OAuth/export/backup/stability tests,
+87 standard-library unit tests, 61 existing OAuth/export/backup/stability tests,
 entry/exit safety checks, service-worker checks, JavaScript parsing and critical
 Python lint. The legacy `v47_test.py` additionally has two failures on the
 unchanged upstream base (old 18-second confirmation and crypto EV assumptions);

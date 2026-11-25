@@ -26,7 +26,13 @@ def disk_budget(state_dir, *, refresh=False):
         return dict(cached[1])
     # This is a ceiling, never a request to resize the Render disk.
     cap = min(1024 * MIB, max(64 * MIB, int(float(os.getenv('TRADINGBOT_STATE_BUDGET_MB', '850')) * MIB)))
-    used = sum(p.stat().st_size for p in root.rglob('*') if p.is_file() and not p.is_symlink())
+    used = 0
+    for p in root.rglob('*'):
+        try:
+            if p.is_file() and not p.is_symlink():
+                used += p.stat().st_size
+        except FileNotFoundError:
+            continue  # atomic status/snapshot replacement raced the inventory
     free = shutil.disk_usage(root).free
     reserve = 96 * MIB
     remaining = max(0, min(cap - used, free - reserve))
