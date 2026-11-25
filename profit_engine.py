@@ -133,11 +133,17 @@ class TradePlan:
     notional_usd: float = 0.0
     risk_dollars: float = 0.0
     volatility_scale: float = 1.0
+    minimum_net_edge_bps: float = 0.0
+    breakeven_target_probability: float = 0.0
 
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
         d["probability_up_pct"] = round(self.probability_up * 100.0, 2)
         d["probability_tp_before_sl_pct"] = round(self.probability_tp_before_sl * 100.0, 2)
+        d["gross_expected_value_bps"] = round(self.expected_value_bps + self.estimated_cost_bps, 2)
+        d["edge_state"] = "negative_after_costs" if self.expected_value_bps < 0 else "below_required_edge" if self.expected_value_bps < self.minimum_net_edge_bps else "meets_net_edge"
+        d["probability_model"] = "directional_calibration_with_unvalidated_barrier_prior"
+        d["target_probability_validated"] = False
         return d
 
 
@@ -494,6 +500,8 @@ class ProfitEngine:
             notional_usd=round(notional, 2),
             risk_dollars=round(risk_dollars, 2),
             volatility_scale=round(vol_scale, 3),
+            minimum_net_edge_bps=round(min_ev_bps, 2),
+            breakeven_target_probability=round(breakeven_p, 6),
         )
         # Extra calibration detail is useful in debug/status but not required by dataclass.
         d = plan.to_dict()

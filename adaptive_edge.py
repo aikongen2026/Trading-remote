@@ -241,6 +241,9 @@ class ShadowLab:
     ) -> None:
         if price <= 0 or signal <= 0:
             return
+        from resource_policy import telemetry_allowed
+        if not telemetry_allowed(Path(self.path).parent):
+            return
         p = plan or {}
         score = sf(intel.get("score"), 0.0)
         prob = sf(p.get("probability_up"), sf(intel.get("probability_up"), 0.0))
@@ -254,6 +257,9 @@ class ShadowLab:
             "ofi_confirm": bool(sec_ok and score >= 62.0 and prob >= 0.55 and ev >= 5.0 and micro >= 1.5),
             "router_focus": bool(sec_ok and router_mode in {"trend", "event", "meanrev"} and score >= 62.0 and ev >= 5.0),
         }
+        from resource_policy import telemetry_allowed
+        if not telemetry_allowed(Path(self.path).parent):
+            return
         now = time.time()
         ts = datetime.now(UTC).isoformat()
         try:

@@ -34,6 +34,8 @@ from urllib.parse import quote as url_quote
 import requests
 from intelligence_engine import IntelligenceEngine, group_for_symbol
 from profit_engine import ProfitEngine
+from resource_policy import disk_budget, merge_stream_bars, stream_quotes_first
+from paper_research import persist_candles, SYMBOLS as RESEARCH_SYMBOLS
 from execution_guard import ExecutionGuard
 from adaptive_edge import AdaptiveRouter, ShadowLab, dynamic_universe, sector_confirmation
 from runtime_audit import RuntimeAudit, EntryConfirmation, supervise_stocks, epoch
@@ -1733,6 +1735,7 @@ def main() -> None:
             _block_at = str(control.get("render_usage_block_new_entries_at", "HARD") or "HARD").upper()
             if _block_at not in {"WARN", "SAVE", "STRONG", "HARD", "OVER"}:
                 _block_at = "HARD"
+            state_disk = disk_budget(STATE_DIR)
             usage_entry_blocked = (
                 render_usage_guard_enabled
                 and _usage_rank.get(render_usage_policy, 0) >= _usage_rank[_block_at]
@@ -2090,7 +2093,8 @@ def main() -> None:
                 quote_parts = chunk(stocks, quotes_batch_size)
                 if quote_parts:
                     with ThreadPoolExecutor(max_workers=min(8, len(quote_parts))) as pool:
-                        futs = [pool.submit(api.quotes_latest, part, stock_live_feed) for part in quote_parts]
+                        futs = [pool.submit(stream_quotes_first, part, intelligence, quote_stale_sec,
+                                            lambda missing: api.quotes_latest(missing, stock_live_feed)) for part in quote_parts]
                         for fut in as_completed(futs):
                             try:
                                 quotes_by_sym.update(fut.result() or {})
@@ -2103,6 +2107,7 @@ def main() -> None:
 
                 # Bars: backfill history only for cold symbols. Once warm, use the
                 # lightweight latest-bar endpoint instead of repeatedly downloading days of history.
+                merge_stream_bars(bars_cache, stocks, intelligence, limit)
                 refresh_syms = [s for s in stocks if bars_cache.needs_refresh(s, refresh_bars_every_sec)]
                 cold_syms = [s for s in refresh_syms if not bars_cache.get_closes(s)]
                 warm_syms = [s for s in refresh_syms if bars_cache.get_closes(s)]
@@ -2700,6 +2705,8 @@ def main() -> None:
                                 st["action"] = "QUOTE_STALE"
                             elif not confirmed:
                                 st["action"] = "WAIT_ENTRY_CONFIRMATION"
+                            elif state_disk["new_entries_blocked"]:
+                                st["action"] = "STORAGE_BUDGET_GUARD"
                             elif usage_entry_blocked:
                                 st["action"] = "RENDER_USAGE_GUARD"
                             elif risk_blocked:
@@ -2822,13 +2829,14 @@ def main() -> None:
                     crypto_quotes: Dict[str, Dict[str, Any]] = {}
                     for part in chunk(crypto_symbols, min(100, quotes_batch_size)):
                         try:
-                            crypto_quotes.update(api.crypto_quotes_latest(part) or {})
+                            crypto_quotes.update(stream_quotes_first(part, intelligence, max(quote_stale_sec, 30), api.crypto_quotes_latest))
                         except Exception as e:
                             notes.append(f"Crypto quotes feilet: {e}")
 
                     crypto_quotes = merge_fresh_stream_quotes(
                         crypto_quotes, crypto_symbols, intelligence, max(quote_stale_sec, 30),
                     )
+                    merge_stream_bars(crypto_bars_cache, crypto_symbols, intelligence, limit)
                     refresh_crypto = [s for s in crypto_symbols if crypto_bars_cache.needs_refresh(s, refresh_bars_every_sec)]
                     cold_crypto = [s for s in refresh_crypto if not crypto_bars_cache.get_closes(s)]
                     warm_crypto = [s for s in refresh_crypto if crypto_bars_cache.get_closes(s)]
@@ -3158,6 +3166,8 @@ def main() -> None:
                                     st["action"] = "WAIT_NEW_SIGNAL"
                                 elif quote_is_stale:
                                     st["action"] = "QUOTE_STALE"
+                                elif state_disk["new_entries_blocked"]:
+                                    st["action"] = "STORAGE_BUDGET_GUARD"
                                 elif usage_entry_blocked:
                                     st["action"] = "RENDER_USAGE_GUARD"
                                 elif risk_blocked:
@@ -3212,6 +3222,11 @@ def main() -> None:
                         if intelligence_enabled and st.get("price") and not quote_is_stale:
                             intelligence.update_learning_outcomes(sym, st.get("price"), bars=crypto_bars_cache.get_bars(sym))
                         symbols_state[sym] = st
+
+            try:
+                persist_candles(STATE_DIR, {ss: crypto_bars_cache.get_bars(ss) for ss in RESEARCH_SYMBOLS})
+            except (OSError, ValueError):
+                pass
 
             # V4.4 training journal: persist actionable WAIT/BUY/EXIT states periodically,
             # not only order submissions. This makes EV/score threshold analysis possible.
@@ -3312,6 +3327,7 @@ def main() -> None:
                 "minutes_to_regular_close": None if minutes_to_close is None else round(minutes_to_close, 1),
                 "entry_close_window": entry_close_window,
                 "flatten_close_window": flatten_close_window,
+                "storage_budget": state_disk,
                 "render_usage": {
                     **(render_usage if isinstance(render_usage, dict) else {}),
                     "guard_enabled": bool(render_usage_guard_enabled),

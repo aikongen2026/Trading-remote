@@ -177,6 +177,14 @@ class EventRecorder:
             )
 
     def event(self, kind: str, symbol: str = "", payload: Optional[Dict[str, Any]] = None) -> None:
+        # Decision snapshots already exist in learning_v3.sqlite. Do not keep
+        # a second, larger copy in this database. Preserve entry/exit evidence.
+        if kind == "DECISION" and (payload or {}).get("event_type") == "SNAPSHOT":
+            return
+        if kind not in {"TRADE_UPDATE", "EDGE_START"}:
+            from resource_policy import telemetry_allowed
+            if not telemetry_allowed(Path(self.path).parent):
+                return
         try:
             raw = json.dumps(payload or {}, ensure_ascii=False, default=str, separators=(",", ":"))
             with self.lock, closing(sqlite3.connect(self.path, timeout=5)) as db, db:

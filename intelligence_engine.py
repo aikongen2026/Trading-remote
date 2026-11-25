@@ -317,6 +317,10 @@ class SignalJournal:
     def log(self, row: Dict[str, Any]) -> None:
         if not self._enabled:
             return
+        if row.get("event_type") == "SNAPSHOT":
+            from resource_policy import telemetry_allowed
+            if not telemetry_allowed(Path(self.path).parent):
+                return
         try:
             with self._lock, closing(sqlite3.connect(self.path, timeout=3)) as db, db:
                 db.execute(
@@ -470,6 +474,7 @@ class IntelligenceEngine:
             self.stock_stream_symbols = [x for x in preferred if x in stock_set][:30]
         self.live_quotes: Dict[str, Dict[str, Any]] = {}
         self.live_bars: Dict[str, Dict[str, Any]] = {}
+        self.stream_bar_history = defaultdict(lambda: deque(maxlen=180))
         self.quote_history: Dict[str, Deque[Dict[str, Any]]] = defaultdict(lambda: deque(maxlen=30))
         self.journal = SignalJournal(os.path.join(state_dir, "learning_v3.sqlite"))
         self.sec_company_names: Dict[str, str] = {}
@@ -815,6 +820,8 @@ class IntelligenceEngine:
         sym = str(m.get("S") or "").upper()
         if not sym:
             return
+        if typ in {"q", "b", "u"} and not parse_ts(m.get("t")):
+            return  # a missing broker timestamp must never become a fresh quote
         key = normalize_symbol(sym)
         if typ == "q":
             snap = {
@@ -833,6 +840,11 @@ class IntelligenceEngine:
                     "volume": safe_float(m.get("v")), "ts": str(m.get("t") or utc_now().isoformat()),
                     "market": market,
                 }
+                bar = {"t": str(m.get("t") or ""), "o": safe_float(m.get("o")),
+                       "h": safe_float(m.get("h")), "l": safe_float(m.get("l")),
+                       "c": safe_float(m.get("c")), "v": safe_float(m.get("v"))}
+                if bar["t"] and bar["c"] > 0:
+                    self.stream_bar_history[key].append(bar)
 
     def _stock_stream_loop(self) -> None:
         feed = str(getattr(self.cfg, "stock_feed", "iex") or "iex").lower()
