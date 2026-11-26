@@ -10,7 +10,6 @@ $target = Join-Path $TargetDirectory 'Backups'
 $oneDriveRoot = Split-Path (Split-Path $TargetDirectory -Parent) -Parent
 $credFile = Join-Path $appDir 'dashboard-password.dpapi'
 $scriptPath = Join-Path $appDir 'install-local-onedrive-backup.ps1'
-$taskName = 'TradingBot Paper Evidence Backup'
 
 function Assert-Archive([string]$File, [string]$ExpectedSha) {
     Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -147,12 +146,6 @@ $savedBat = Join-Path $setupDir 'Hent_TradingBot_til_OneDrive.bat'
 if ((Test-Path -LiteralPath $sourceBat) -and
     [IO.Path]::GetFullPath($sourceBat) -ne [IO.Path]::GetFullPath($savedBat)) {
     Copy-Item -LiteralPath $sourceBat -Destination $savedBat -Force
-}
-# Explicit cost protection: disable an existing hourly task before downloading.
-$task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-if ($task) {
-    Disable-ScheduledTask -TaskName $taskName | Out-Null
-    Write-Host 'Tidligere timejobb er deaktivert for aa unngaa trafikkutgifter.' -ForegroundColor Yellow
 }
 Write-Host 'Trading Bot - sikkerhetskopi til eksisterende OneDrive' -ForegroundColor Cyan
 Write-Host ('Lagringsmappe: ' + $target)
