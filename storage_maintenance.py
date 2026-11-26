@@ -38,12 +38,20 @@ def _snapshot(row, columns):
         payload = json.loads(item.get('payload') or '')
     except (ValueError, TypeError):
         return False
-    if not isinstance(payload, dict) or payload.get('event_type') != 'SNAPSHOT':
+    if not isinstance(payload, dict) or payload.get('event_type') not in (None, 'SNAPSHOT'):
         return False
     # Retain even redundant snapshots that mention execution evidence.
     if any(payload.get(k) for k in ('order_id', 'client_order_id', 'entry_client_order_id', 'group_id')):
         return False
-    return not str(payload.get('action') or '').upper().startswith(('BUY', 'SELL', 'EXIT'))
+    action = str(payload.get('action') or '').upper()
+    if action.startswith(('BUY', 'SELL', 'EXIT')):
+        return False
+    if payload.get('event_type') is None:
+        # Pre-event_type journals used explicit WAIT/HOLD actions for repeated
+        # observations. Unknown legacy records remain in SQLite.
+        return action.startswith(('WAIT', 'HOLD', 'NO_SIGNAL', 'SKIP_', 'TEST_MODE',
+                                  'RENDER_USAGE_GUARD', 'STORAGE_BUDGET_GUARD', 'MARKET_CLOSED'))
+    return True
 
 
 def _space(root):
@@ -104,6 +112,7 @@ def archive_legacy_edge_snapshots(state_dir):
                         if kind == 'table':
                             target.execute(sql)
                     for table in tables:
+                        result['stage'] = 'copy_' + table
                         rows, digest = 0, hashlib.sha256()
                         cols = [r[1] for r in original.execute('PRAGMA table_info(' + _quote(table) + ')')]
                         insert = 'INSERT INTO ' + _quote(table) + ' VALUES(' + ','.join('?' for _ in cols) + ')'
@@ -117,10 +126,12 @@ def archive_legacy_edge_snapshots(state_dir):
                                 archive.write(encoded)
                                 archive_hash.update(encoded)
                                 archived += 1
+                                result['archived_rows'] = archived
                             else:
                                 target.execute(insert, row)
                                 digest.update(encoded)
                                 rows += 1
+                                result['retained_rows_so_far'] = rows
                         expected[table] = (digest.hexdigest(), rows)
                     # Preserve AUTOINCREMENT watermarks, including archived IDs.
                     target.execute('DELETE FROM sqlite_sequence')
@@ -184,6 +195,9 @@ def archive_legacy_edge_snapshots(state_dir):
             os.close(fd)
     except (OSError, sqlite3.Error, ValueError, TypeError, RuntimeError) as exc:
         result.update(state='deferred', error=type(exc).__name__)
+        if isinstance(exc, OSError):
+            result['space_reserve_reached'] = str(exc) == 'maintenance_reserve'
+            result['errno'] = exc.errno
     # Only numbers/status are logged, never payloads or account credentials.
     print('EDGE_STORAGE_MAINTENANCE ' + json.dumps(result, sort_keys=True), flush=True)
     return result

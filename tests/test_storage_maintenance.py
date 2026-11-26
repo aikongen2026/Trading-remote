@@ -108,6 +108,17 @@ class ArchiveTests(unittest.TestCase):
             conn.execute("INSERT INTO events(ts,kind,payload) VALUES('x','EDGE_START','{}')")
             self.assertEqual(conn.execute('SELECT MAX(id) FROM events').fetchone()[0], 5001)
 
+    def test_legacy_wait_snapshots_are_archived_but_unknown_and_buy_are_retained(self):
+        with closing(sqlite3.connect(self.db)) as conn, conn:
+            for action in ('WAIT_INTEL:60', 'HOLD', 'BUY', 'UNKNOWN_LEGACY'):
+                conn.execute("INSERT INTO events(ts,kind,payload) VALUES('x','DECISION',?)",
+                             (json.dumps({'action':action}),))
+        result = archive_legacy_edge_snapshots(self.root)
+        self.assertEqual(result['state'], 'archived')
+        self.assertEqual(result['archived_rows'], 502)
+        self.assertEqual(len(self.rows()), 9)
+        self.assertEqual([json.loads(row[-1])['action'] for row in self.rows()[-2:]], ['BUY','UNKNOWN_LEGACY'])
+
     def test_interrupted_publication_keeps_original_and_reuses_archive(self):
         import storage_maintenance
         replace = storage_maintenance.os.replace
