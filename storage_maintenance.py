@@ -102,14 +102,17 @@ def archive_legacy_edge_snapshots(state_dir):
             inventory = {kind: {'rows': count, 'payload_mb': round(size / MIB, 2)}
                          for kind, count, size in original.execute('SELECT kind,COUNT(*),COALESCE(SUM(LENGTH(payload)),0) FROM events GROUP BY kind')}
             print('EDGE_STORAGE_INVENTORY ' + json.dumps(inventory, sort_keys=True), flush=True)
+            latest_shadow = dict(original.execute('SELECT symbol,MAX(ts) FROM overnight_shadow GROUP BY symbol'))
             # A cheap first scan avoids rewriting the database on later boots.
             found = any(_snapshot(row, columns) for row in original.execute("SELECT * FROM events WHERE kind IN ('DECISION','SESSION_CLOCK_V3','SESSION_CALENDAR_V3')"))
-            if not found:
+            shadow_count = original.execute('SELECT COUNT(*) FROM overnight_shadow').fetchone()[0]
+            if not found and shadow_count <= len(latest_shadow):
                 return result
             with tempfile.TemporaryDirectory(prefix='.edge-archive-', dir=root) as work:
                 staged = Path(work) / 'retained.sqlite'
                 packed = Path(work) / 'snapshots.jsonl.gz'
                 expected, archived, archive_hash = {}, 0, hashlib.sha256()
+                archive_columns, archive_counts = {}, {}
                 with closing(sqlite3.connect(str(staged))) as target, gzip.open(packed, 'wb', compresslevel=6) as archive:
                     target.execute('PRAGMA journal_mode=DELETE')
                     target.execute('PRAGMA synchronous=FULL')
@@ -120,6 +123,7 @@ def archive_legacy_edge_snapshots(state_dir):
                         result['stage'] = 'copy_' + table
                         rows, digest = 0, hashlib.sha256()
                         cols = [r[1] for r in original.execute('PRAGMA table_info(' + _quote(table) + ')')]
+                        archive_columns[table] = cols
                         insert = 'INSERT INTO ' + _quote(table) + ' VALUES(' + ','.join('?' for _ in cols) + ')'
                         for index, row in enumerate(original.execute('SELECT * FROM ' + _quote(table) + ' ORDER BY rowid')):
                             if index % 128 == 0:
@@ -127,10 +131,14 @@ def archive_legacy_edge_snapshots(state_dir):
                                 archive.flush()
                                 _space(root)
                             encoded = _encoded(row)
-                            if table == 'events' and _snapshot(row, cols):
-                                archive.write(encoded)
-                                archive_hash.update(encoded)
+                            shadow = dict(zip(cols, row)) if table == 'overnight_shadow' else {}
+                            cold_shadow = bool(shadow) and shadow.get('ts') != latest_shadow.get(shadow.get('symbol'))
+                            if (table == 'events' and _snapshot(row, cols)) or cold_shadow:
+                                record = (json.dumps({'table':table, 'row':list(row)}, ensure_ascii=False, separators=(',', ':')) + '\n').encode('utf-8')
+                                archive.write(record)
+                                archive_hash.update(record)
                                 archived += 1
+                                archive_counts[table] = archive_counts.get(table, 0) + 1
                                 result['archived_rows'] = archived
                             else:
                                 target.execute(insert, row)
@@ -173,7 +181,8 @@ def archive_legacy_edge_snapshots(state_dir):
                         raise ValueError('existing_archive_mismatch')
                 else:
                     os.replace(packed, final_archive)
-                manifest = {'format': 'edge-snapshot-rows-v1', 'columns': columns,
+                manifest = {'format': 'edge-observation-rows-v2', 'columns': columns,
+                            'columns_by_table': archive_columns, 'rows_by_table': archive_counts,
                             'rows': archived, 'sha256_uncompressed': archive_hash.hexdigest(),
                             'created_at': datetime.now(timezone.utc).isoformat(),
                             'source': source.name, 'retained_tables': {k: v[1] for k, v in expected.items()}}
@@ -191,6 +200,7 @@ def archive_legacy_edge_snapshots(state_dir):
                 after = staged.stat().st_size
                 os.replace(staged, source)
                 result.update(state='archived', archived_rows=archived,
+                              archived_tables=archive_counts,
                               archive=name, retained_events=expected['events'][1],
                               reclaimed_mb=round((before - after - final_archive.stat().st_size) / MIB, 2))
         fd = os.open(root, os.O_RDONLY)
