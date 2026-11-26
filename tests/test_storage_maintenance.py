@@ -57,7 +57,7 @@ class ArchiveTests(unittest.TestCase):
         self.assertEqual(self.rows(), self.original[500:])
         archive = self.root / 'edge_snapshot_archives' / result['archive']
         raw = gzip.decompress(archive.read_bytes())
-        moved = [tuple(json.loads(line)) for line in raw.splitlines()]
+        moved = [tuple(json.loads(line)['row']) for line in raw.splitlines()]
         self.assertEqual(moved, self.original[:500])
         manifest = json.loads(Path(str(archive)+'.json').read_text())
         self.assertEqual(manifest['sha256_uncompressed'], hashlib.sha256(raw).hexdigest())
@@ -129,8 +129,26 @@ class ArchiveTests(unittest.TestCase):
         self.assertEqual(result['archived_rows'], 502)
         self.assertEqual(self.rows(), self.original[500:])
         with gzip.open(self.root/'edge_snapshot_archives'/result['archive'], 'rt') as stream:
-            archived = [tuple(json.loads(line)) for line in stream]
+            archived = [tuple(json.loads(line)['row']) for line in stream]
         self.assertEqual(archived, expected[:500] + expected[-2:])
+
+    def test_old_overnight_rows_are_archived_with_latest_per_symbol_retained(self):
+        with closing(sqlite3.connect(self.db)) as conn, conn:
+            conn.executemany('INSERT INTO overnight_shadow VALUES(?,?,?)',
+                             [('2026-11-24','BTCUSD','old-shadow'),('2026-11-26','BTCUSD','latest-shadow')])
+        result = archive_legacy_edge_snapshots(self.root)
+        self.assertEqual(result['state'], 'archived')
+        self.assertEqual(result['archived_tables']['overnight_shadow'], 1)
+        with closing(sqlite3.connect(self.db)) as conn:
+            self.assertEqual(conn.execute("SELECT ts,payload FROM overnight_shadow WHERE symbol='BTCUSD'").fetchall(),
+                             [('2026-11-26','latest-shadow')])
+        archive = self.root/'edge_snapshot_archives'/result['archive']
+        with gzip.open(archive, 'rt') as stream:
+            rows = [json.loads(line) for line in stream]
+        self.assertEqual([r['row'] for r in rows if r['table']=='overnight_shadow'],
+                         [['2026-11-24','BTCUSD','old-shadow']])
+        manifest = json.loads(Path(str(archive)+'.json').read_text())
+        self.assertEqual(manifest['columns_by_table']['overnight_shadow'], ['ts','symbol','payload'])
 
     def test_interrupted_publication_keeps_original_and_reuses_archive(self):
         import storage_maintenance
