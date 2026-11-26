@@ -51,7 +51,7 @@ class OneDriveBackup:
         self.client_id = os.getenv("ONEDRIVE_CLIENT_ID", "").strip()
         self.client_secret = os.getenv("ONEDRIVE_CLIENT_SECRET", "").strip()
         self.tenant = os.getenv("ONEDRIVE_TENANT", "organizations").strip()
-        self.folder = os.getenv("ONEDRIVE_FOLDER", "AI/TR bots/Lagring").strip("/")
+        self.folder = os.getenv("ONEDRIVE_FOLDER", "AI/tradingbot").strip("/")
         self.expected_email = os.getenv("ONEDRIVE_EXPECTED_EMAIL", "").strip().lower()
         self.token_path = self.state / "onedrive_tokens.json"
         self.health_path = self.state / "onedrive_backup_health.json"
