@@ -1,7 +1,8 @@
 # Trading Bot OneDrive pairing V2 (Windows PowerShell 5.1 and PowerShell 7)
 # Runs official rclone authorization locally and never prints or uploads tokens
 # anywhere except over TLS to the existing password-protected Trading Bot service.
-param([switch]$SelfTest)
+param([switch]$SelfTest,
+      [string]$TargetDirectory = (Join-Path $env:USERPROFILE 'OneDrive - Straye AS\AI\tradingbot'))
 $ErrorActionPreference = 'Stop'
 
 function Invoke-NativeAuthorization([string]$Program, [string]$Arguments) {
@@ -44,7 +45,20 @@ if ($SelfTest) {
     return
 }
 
-Write-Host 'Trading Bot OneDrive V2 - ny innloggingsmetode' -ForegroundColor Cyan
+$setupDir = Join-Path $TargetDirectory 'Oppsett'
+New-Item -Path $setupDir -ItemType Directory -Force | Out-Null
+$savedScript = Join-Path $setupDir 'connect-onedrive-v2.ps1'
+if ([IO.Path]::GetFullPath($PSCommandPath) -ne [IO.Path]::GetFullPath($savedScript)) {
+    Copy-Item -LiteralPath $PSCommandPath -Destination $savedScript -Force
+}
+$sourceBat = Join-Path $PSScriptRoot 'Koble_TradingBot_OneDrive.bat'
+$savedBat = Join-Path $setupDir 'Koble_TradingBot_OneDrive.bat'
+if ((Test-Path -LiteralPath $sourceBat) -and
+    [IO.Path]::GetFullPath($sourceBat) -ne [IO.Path]::GetFullPath($savedBat)) {
+    Copy-Item -LiteralPath $sourceBat -Destination $savedBat -Force
+}
+Write-Host ('Oppsett lagret i: ' + $setupDir) -ForegroundColor Cyan
+Write-Host 'Trading Bot OneDrive - AI/tradingbot' -ForegroundColor Cyan
 $endpoint = 'https://trading-remote.onrender.com/api/onedrive/pair'
 $workspace = Join-Path $env:TEMP 'tradingbot-onedrive-setup'
 New-Item -Path $workspace -ItemType Directory -Force | Out-Null
@@ -65,7 +79,7 @@ if ($localRclone) {
     $rcloneExe = $found.FullName
 }
 
-Write-Host 'Microsoft-innlogging aapnes i nettleseren. Velg jobb-OneDrive.' -ForegroundColor Cyan
+Write-Host 'Microsoft-innlogging aapnes i nettleseren. Velg christian@straye.no.' -ForegroundColor Cyan
 Write-Host 'Fullfoer innloggingen i nettleseren, og kom tilbake hit.'
 $result = Invoke-NativeAuthorization $rcloneExe 'authorize onedrive'
 if ($result.ExitCode -ne 0) {

@@ -257,6 +257,8 @@ def main() -> None:
     print('STATE_STORAGE_BUDGET ' + __import__('json').dumps(
         disk_budget(trading_bot.STATE_DIR, refresh=True), sort_keys=True), flush=True)
     print('ONEDRIVE_STORAGE_STATUS ' + __import__('json').dumps({
+        'destination': RCLONE_BACKUP.folder,
+        'rclone_drive_configured': bool(RCLONE_BACKUP.drive_id),
         'rclone_connected': RCLONE_BACKUP.connected(),
         'graph_configured': ONEDRIVE_BACKUP.configured(),
         'graph_connected': ONEDRIVE_BACKUP.connected(),
