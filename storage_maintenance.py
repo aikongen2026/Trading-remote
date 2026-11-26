@@ -32,6 +32,8 @@ def _encoded(row):
 
 def _snapshot(row, columns):
     item = dict(zip(columns, row))
+    if item.get('kind') in ('SESSION_CLOCK_V3', 'SESSION_CALENDAR_V3'):
+        return True  # immutable observations, never execution instructions
     if item.get('kind') != 'DECISION':
         return False
     try:
@@ -97,8 +99,11 @@ def archive_legacy_edge_snapshots(state_dir):
             columns = [r[1] for r in original.execute('PRAGMA table_info(events)')]
             if not {'id', 'ts', 'kind', 'symbol', 'payload'}.issubset(columns):
                 raise ValueError('unrecognized_event_columns')
+            inventory = {kind: {'rows': count, 'payload_mb': round(size / MIB, 2)}
+                         for kind, count, size in original.execute('SELECT kind,COUNT(*),COALESCE(SUM(LENGTH(payload)),0) FROM events GROUP BY kind')}
+            print('EDGE_STORAGE_INVENTORY ' + json.dumps(inventory, sort_keys=True), flush=True)
             # A cheap first scan avoids rewriting the database on later boots.
-            found = any(_snapshot(row, columns) for row in original.execute('SELECT * FROM events WHERE kind=\'DECISION\''))
+            found = any(_snapshot(row, columns) for row in original.execute("SELECT * FROM events WHERE kind IN ('DECISION','SESSION_CLOCK_V3','SESSION_CALENDAR_V3')"))
             if not found:
                 return result
             with tempfile.TemporaryDirectory(prefix='.edge-archive-', dir=root) as work:

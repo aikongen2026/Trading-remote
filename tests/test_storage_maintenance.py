@@ -119,6 +119,19 @@ class ArchiveTests(unittest.TestCase):
         self.assertEqual(len(self.rows()), 9)
         self.assertEqual([json.loads(row[-1])['action'] for row in self.rows()[-2:]], ['BUY','UNKNOWN_LEGACY'])
 
+    def test_session_observations_move_losslessly_and_broker_updates_stay(self):
+        with closing(sqlite3.connect(self.db)) as conn, conn:
+            conn.executemany("INSERT INTO events(ts,kind,payload) VALUES('x',?,?)",
+                             [('SESSION_CLOCK_V3','clock-observation'),('SESSION_CALENDAR_V3','calendar-observation')])
+        expected = self.rows()
+        result = archive_legacy_edge_snapshots(self.root)
+        self.assertEqual(result['state'], 'archived')
+        self.assertEqual(result['archived_rows'], 502)
+        self.assertEqual(self.rows(), self.original[500:])
+        with gzip.open(self.root/'edge_snapshot_archives'/result['archive'], 'rt') as stream:
+            archived = [tuple(json.loads(line)) for line in stream]
+        self.assertEqual(archived, expected[:500] + expected[-2:])
+
     def test_interrupted_publication_keeps_original_and_reuses_archive(self):
         import storage_maintenance
         replace = storage_maintenance.os.replace
