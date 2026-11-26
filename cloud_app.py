@@ -256,6 +256,11 @@ def main() -> None:
     from resource_policy import disk_budget
     print('STATE_STORAGE_BUDGET ' + __import__('json').dumps(
         disk_budget(trading_bot.STATE_DIR, refresh=True), sort_keys=True), flush=True)
+    print('ONEDRIVE_STORAGE_STATUS ' + __import__('json').dumps({
+        'rclone_connected': RCLONE_BACKUP.connected(),
+        'graph_configured': ONEDRIVE_BACKUP.configured(),
+        'graph_connected': ONEDRIVE_BACKUP.connected(),
+    }, sort_keys=True), flush=True)
     initialise_state()
     ALPACA_EDGE.start()
     RENDER_USAGE_GUARD.start()
