@@ -1,15 +1,15 @@
 # Trading Bot evidence backup -> existing Windows OneDrive sync folder.
 # One-time on-demand downloader; no hourly network costs. No OAuth/cloud app setup.
 # Password stored encrypted with Windows DPAPI for the current user only.
-param([switch]$RunBackup, [switch]$SelfTest)
+param([switch]$RunBackup, [switch]$SelfTest,
+      [string]$TargetDirectory = (Join-Path $env:USERPROFILE 'OneDrive - Straye AS\AI\tradingbot'))
 $ErrorActionPreference = 'Stop'
 $baseUrl = 'https://trading-remote.onrender.com'
 $appDir = Join-Path $env:LOCALAPPDATA 'TradingBotBackup'
-$target = Join-Path $env:USERPROFILE 'OneDrive - Straye AS\AI\TR bots\Lagring'
-$oneDriveRoot = Join-Path $env:USERPROFILE 'OneDrive - Straye AS'
+$target = Join-Path $TargetDirectory 'Backups'
+$oneDriveRoot = Split-Path (Split-Path $TargetDirectory -Parent) -Parent
 $credFile = Join-Path $appDir 'dashboard-password.dpapi'
 $scriptPath = Join-Path $appDir 'install-local-onedrive-backup.ps1'
-$taskName = 'TradingBot Paper Evidence Backup'
 
 function Assert-Archive([string]$File, [string]$ExpectedSha) {
     Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -118,7 +118,7 @@ function Invoke-Backup {
 if ($SelfTest) {
     # Test installation script without changing PC, logging in or scheduling jobs.
     if ($baseUrl -ne 'https://trading-remote.onrender.com') { throw 'Ugyldig endpoint.' }
-    if ($target -notlike '*OneDrive - Straye AS*Lagring') { throw 'Feil maalmappe.' }
+    if ($target -notlike '*OneDrive - Straye AS\AI\tradingbot\Backups') { throw 'Feil maalmappe.' }
     Write-Host 'Backup script self-test OK' -ForegroundColor Green
     return
 }
@@ -133,14 +133,23 @@ if ($RunBackup) {
 if (-not (Test-Path -LiteralPath $oneDriveRoot -PathType Container)) {
     throw 'OneDrive - Straye AS er ikke synkronisert paa PC-en. Ingen endringer gjort.'
 }
-# Explicit cost protection: disable an existing hourly task before downloading.
-$task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
-if ($task) {
-    Disable-ScheduledTask -TaskName $taskName | Out-Null
-    Write-Host 'Tidligere timejobb er deaktivert for aa unngaa trafikkutgifter.' -ForegroundColor Yellow
+$setupDir = Join-Path $TargetDirectory 'Oppsett'
+New-Item -Path $setupDir -ItemType Directory -Force | Out-Null
+$savedScript = Join-Path $setupDir 'install-local-onedrive-backup.ps1'
+foreach ($destination in @($scriptPath, $savedScript)) {
+    if ([IO.Path]::GetFullPath($PSCommandPath) -ne [IO.Path]::GetFullPath($destination)) {
+        Copy-Item -LiteralPath $PSCommandPath -Destination $destination -Force
+    }
+}
+$sourceBat = Join-Path $PSScriptRoot 'Hent_TradingBot_til_OneDrive.bat'
+$savedBat = Join-Path $setupDir 'Hent_TradingBot_til_OneDrive.bat'
+if ((Test-Path -LiteralPath $sourceBat) -and
+    [IO.Path]::GetFullPath($sourceBat) -ne [IO.Path]::GetFullPath($savedBat)) {
+    Copy-Item -LiteralPath $sourceBat -Destination $savedBat -Force
 }
 Write-Host 'Trading Bot - sikkerhetskopi til eksisterende OneDrive' -ForegroundColor Cyan
 Write-Host ('Lagringsmappe: ' + $target)
+Write-Host 'Bruker OneDrive-programmet som allerede er innlogget. Ingen Microsoft-app kobles til Render.'
 if (-not (Test-Path -LiteralPath $credFile -PathType Leaf)) {
     $secure = Read-Host 'Skriv Trading Bot-passordet (ikke OneDrive-passord)' -AsSecureString
     $secure | ConvertFrom-SecureString | Set-Content -LiteralPath $credFile -Encoding UTF8
@@ -149,4 +158,6 @@ if (-not (Test-Path -LiteralPath $credFile -PathType Leaf)) {
 }
 Write-Host 'Tester full sikkerhetskopiering mot Render ...'
 $null = Invoke-Backup
-Write-Host 'FERDIG: Verifisert sikkerhetskopi lagret i OneDrive. Ingen automatisk timejobb er aktiv.' -ForegroundColor Green
+Write-Host 'FERDIG: Verifisert sikkerhetskopi lagret i OneDrive-mappen paa PC-en.' -ForegroundColor Green
+Write-Host 'OneDrive-programmet synkroniserer filen til skyen naar det er aktivt.'
+Write-Host ('Kjoer Hent_TradingBot_til_OneDrive.bat i ' + $setupDir + ' naar du vil hente en ny kopi.')
