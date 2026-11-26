@@ -249,6 +249,13 @@ def main() -> None:
     # Restore all evidence databases before Edge V4.9 opens its SQLite recorder.
     backup = StateBackup(trading_bot.STATE_DIR)
     backup.restore()
+    # Offline maintenance must finish before any Edge/engine/backup writer opens
+    # the legacy database. Archives preserve every moved snapshot in full.
+    from storage_maintenance import archive_legacy_edge_snapshots
+    archive_legacy_edge_snapshots(trading_bot.STATE_DIR)
+    from resource_policy import disk_budget
+    print('STATE_STORAGE_BUDGET ' + __import__('json').dumps(
+        disk_budget(trading_bot.STATE_DIR, refresh=True), sort_keys=True), flush=True)
     initialise_state()
     ALPACA_EDGE.start()
     RENDER_USAGE_GUARD.start()
