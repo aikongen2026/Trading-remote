@@ -200,6 +200,9 @@ class EventRecorder:
             self.last_error = type(exc).__name__
 
     def news_item(self, item: Dict[str, Any], score: float) -> None:
+        from resource_policy import telemetry_allowed
+        if not telemetry_allowed(Path(self.path).parent):
+            return
         try:
             article_id = str(item.get("id") or item.get("url") or f"news-{time.time_ns()}")
             syms = [symbol_key(x) for x in (item.get("symbols") or []) if symbol_key(x)]
@@ -225,6 +228,9 @@ class EventRecorder:
             self.last_error = type(exc).__name__
 
     def overnight(self, symbol: str, payload: Dict[str, Any], feed: str) -> None:
+        from resource_policy import telemetry_allowed
+        if not telemetry_allowed(Path(self.path).parent):
+            return
         try:
             lt = payload.get("latestTrade") or payload.get("latest_trade") or {}
             mb = payload.get("minuteBar") or payload.get("minute_bar") or {}

@@ -3354,6 +3354,7 @@ def main() -> None:
                     f"{utc_now_iso()} | INFO | Heartbeat: market={market_mode} stock_session={stock_session} mode={strategy_mode} symbols={len(symbols_state)} "
                     f"armed={armed} paused={paused} TEST={test_mode} orders={len(orders)} "
                     f"poll={poll_sec}s bars_refresh={refresh_bars_every_sec}s "
+                    f"disk_used_mb={state_disk['used_mb']} disk_remaining_mb={state_disk['remaining_mb']} disk_blocked={state_disk['new_entries_blocked']} "
                     f"positive_signals={positive_signal_count} blockers={dict(blocker_top[:8])} notes={out['notes']}"
                 )
 
